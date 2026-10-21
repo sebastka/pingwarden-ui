@@ -1,0 +1,53 @@
+{
+  "name": "pingwarden-ui",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "description": "Dashboard for Pingwarden: monitors and their live state and history, events, notifiers and their delivery log, maintenance windows",
+  "engines": {
+    "node": ">=26.0.0"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n api,web -c blue,magenta \"npm:dev:api\" \"npm:dev:web\"",
+    "dev:api": "node --watch --env-file-if-exists=.env src/server/index.ts",
+    "dev:web": "vite",
+    "dev:pingwarden": "docker compose up -d --wait",
+    "build": "vite build",
+    "start": "node --env-file-if-exists=.env src/server/index.ts",
+    "typecheck": "tsc -p tsconfig.server.json && tsc -p tsconfig.web.json",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "node --env-file-if-exists=.env --test \"test/**/*.test.ts\"",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm test",
+    "bundle": "bash scripts/bundle.sh",
+    "docker:build": "docker build -t pingwarden-ui:local ."
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.1.4",
+    "hono": "^4.13.13",
+    "openid-client": "^6.8.8"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.6.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@typescript/native": "npm:typescript@^7.0.2",
+    "@vitejs/plugin-react": "^6.1.2",
+    "concurrently": "^10.0.6",
+    "eslint": "^10.12.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.7",
+    "globals": "^17.13.0",
+    "prettier": "^3.9.10",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "typescript": "npm:@typescript/typescript6@^6.0.2",
+    "typescript-eslint": "^8.71.1",
+    "vite": "^8.3.4",
+    "yaml": "^2.9.1"
+  }
+}

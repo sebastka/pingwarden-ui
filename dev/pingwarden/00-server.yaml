@@ -1,0 +1,49 @@
+# Development Pingwarden (compose.yaml). Not a deployment example: the tokens are public.
+server:
+  listen: 0.0.0.0:8081
+  api_tokens:
+    - name: ui
+      token: dev-read-token-0123456789
+      scope: read
+    - name: admin
+      token: dev-admin-token-0123456789
+      scope: admin
+  auth:
+    oidc:
+      # What the browser and the UI server see; Pingwarden reads the keys from inside the
+      # mock provider's network namespace.
+      issuer: http://localhost:${MOCK_OIDC_PORT:-8090}/default
+      jwks_url: http://localhost:8080/default/jwks
+      audience: pingwarden
+      claim: roles
+      read: [pingwarden-read]
+      admin: [pingwarden-admin]
+
+database:
+  url: postgres://pingwarden:${POSTGRES_PASSWORD}@postgres/pingwarden
+
+defaults:
+  interval: 30s
+  timeout: 5s
+  notify: [webhook-ok]
+  renotify_every: 15m
+  flapping: { window: 1h, max_transitions: 6 }
+
+notifiers:
+  # Delivers: Pingwarden's own push endpoint, which reports the webhook-receiver monitor up.
+  webhook-ok:
+    type: webhook
+    url: http://127.0.0.1:8081/api/v1/push/dev-webhook-receiver-0123456789
+  # Fails: nothing listens there. Fills the delivery log with errors.
+  ntfy-broken:
+    type: ntfy
+    url: http://localhost:9/pingwarden
+    events: [down, up, reminder, test]
+  ops-mail:
+    type: email
+    host: localhost
+    port: 2525
+    security: none
+    from: Pingwarden <pingwarden@example.invalid>
+    to: [ops@example.invalid]
+    events: [down, up]

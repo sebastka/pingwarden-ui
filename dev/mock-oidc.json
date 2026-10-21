@@ -1,0 +1,19 @@
+{
+  "interactiveLogin": true,
+  "tokenCallbacks": [
+    {
+      "issuerId": "default",
+      "tokenExpiry": 300,
+      "requestMappings": [
+        {
+          "requestParam": "grant_type",
+          "match": "*",
+          "claims": {
+            "aud": ["pingwarden-ui", "pingwarden"],
+            "azp": "pingwarden-ui"
+          }
+        }
+      ]
+    }
+  ]
+}

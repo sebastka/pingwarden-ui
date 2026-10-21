@@ -1,0 +1,132 @@
+# Monitors chosen to show every state: up, degraded, down, pending (push), maintenance, a
+# dependency, a disabled monitor, and some external targets for TLS and DNS.
+groups:
+  - id: infra
+    name: Infrastructure
+    tags: [infra]
+  - id: database
+    name: Database
+    parent: infra
+    tags: [database]
+  - id: web
+    name: Websites
+    tags: [public]
+  - id: identity
+    name: Identity provider
+    parent: web
+    defaults:
+      notify: [webhook-ok, ntfy-broken]
+  - id: legacy
+    name: Legacy
+    description: Being decommissioned
+
+monitors:
+  - id: pingwarden-self
+    name: Pingwarden health
+    type: http
+    url: http://localhost:8081/healthz
+    group: infra
+    keyword: ok
+  - id: loopback
+    name: Loopback ping
+    type: icmp
+    host: 127.0.0.1
+    group: infra
+  - id: postgres-tcp
+    name: PostgreSQL port
+    type: tcp
+    host: postgres
+    port: 5432
+    group: database
+  - id: postgres-query
+    name: PostgreSQL query
+    type: postgres
+    url: postgres://pingwarden:${POSTGRES_PASSWORD}@postgres/pingwarden
+    group: database
+    depends_on: [postgres-tcp]
+  - id: ssh-bastion
+    name: SSH bastion
+    description: Nothing listens on port 22 here, so this one is down.
+    type: tcp
+    host: localhost
+    port: 22
+    group: infra
+    tags: [critical]
+    notify: [webhook-ok, ntfy-broken, ops-mail]
+    depends_on: [loopback]
+  - id: oidc-discovery
+    name: OIDC discovery
+    type: http
+    url: http://localhost:8080/default/.well-known/openid-configuration
+    group: identity
+    json_path: issuer
+  - id: oidc-slow
+    name: OIDC token endpoint (latency budget 1 ms)
+    type: http
+    url: http://localhost:8080/default/jwks
+    group: identity
+    degraded_latency: 1ms
+  - id: example-web
+    name: example.com
+    type: http
+    url: https://example.com/
+    group: web
+    keyword: Example Domain
+    interval: 60s
+  - id: example-cert
+    name: example.com certificate
+    type: tls
+    host: example.com
+    group: web
+    interval: 1h
+    expiry_warning: 21d
+  - id: example-dns
+    name: example.com A record
+    type: dns
+    domain: example.com
+    record_type: A
+    server: 1.1.1.1
+    group: web
+    interval: 5m
+  - id: nightly-backup
+    name: Nightly backup
+    description: Push monitor; report with GET /api/v1/push/dev-push-token-0123456789
+    type: push
+    token: dev-push-token-0123456789
+    interval: 10m
+    failure_threshold: 1
+  - id: webhook-receiver
+    name: Webhook receiver
+    description: Pushed by the webhook-ok notifier, so it shows when notifications last went out.
+    type: push
+    token: dev-webhook-receiver-0123456789
+    interval: 7d
+    notify: []
+  - id: legacy-app
+    name: Legacy application
+    type: tcp
+    host: localhost
+    port: 9
+    group: legacy
+  - id: old-ftp
+    name: Old FTP server
+    type: tcp
+    host: localhost
+    port: 21
+    group: legacy
+    enabled: false
+
+maintenance:
+  - id: legacy-decommission
+    description: The legacy stack is being switched off
+    groups: [legacy]
+    start: 2026-01-01T00:00:00Z
+    end: 2030-01-01T00:00:00Z
+  - id: weekly-patching
+    description: Patch window for the websites
+    groups: [web]
+    recurring:
+      days: [sun]
+      start: '03:00'
+      duration: 1h
+      timezone: Europe/Oslo

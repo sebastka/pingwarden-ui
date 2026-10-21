@@ -1,7 +1,7 @@
 ---
 version: 2
 # Pulling Docker Hardened Images needs a Docker Hub account. Dependabot cannot read Actions
-# secrets or variables, so DHIDOCKERHUB_USERNAME_USERNAME and DOCKERHUB_TOKEN are both Dependabot *secrets* here.
+# secrets or variables, so DHIDOCKERHUB_USERNAME and DOCKERHUB_TOKEN are both Dependabot *secrets* here.
 registries:
   dhi:
     type: docker-registry

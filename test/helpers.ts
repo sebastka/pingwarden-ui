@@ -1,30 +1,53 @@
-import { createServer, type IncomingMessage } from 'node:http';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
 export interface Seen {
   method: string;
   path: string;
   authorization: string | undefined;
+  body: string;
+}
+
+export interface Reply {
+  status?: number;
+  body?: unknown;
+  type?: string;
+  /** Takes over the response (streams). */
+  raw?: (res: ServerResponse) => void;
 }
 
 /** A stand-in Pingwarden: `reply` answers each request; every request is recorded. */
 export async function fakePingwarden(
-  reply: (req: IncomingMessage, url: URL) => { status?: number; body?: unknown; type?: string },
+  reply: (req: IncomingMessage, url: URL, body: string) => Reply,
 ): Promise<{ url: string; seen: Seen[]; close: () => Promise<void> }> {
   const seen: Seen[] = [];
   const server = createServer((req, res) => {
-    const url = new URL(req.url!, 'http://pw');
-    seen.push({ method: req.method!, path: url.pathname + url.search, authorization: req.headers.authorization });
-    const r = reply(req, url);
-    res.writeHead(r.status ?? 200, { 'content-type': r.type ?? 'application/json' });
-    res.end(typeof r.body === 'string' ? r.body : JSON.stringify(r.body ?? { ok: true }));
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      const url = new URL(req.url!, 'http://pw');
+      seen.push({
+        method: req.method!,
+        path: url.pathname + url.search,
+        authorization: req.headers.authorization,
+        body,
+      });
+      const r = reply(req, url, body);
+      if (r.raw) return r.raw(res);
+      res.writeHead(r.status ?? 200, { 'content-type': r.type ?? 'application/json' });
+      res.end(typeof r.body === 'string' ? r.body : JSON.stringify(r.body ?? { ok: true }));
+    });
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address() as AddressInfo;
   return {
     url: `http://127.0.0.1:${port}`,
     seen,
-    close: () => new Promise((resolve) => server.close(() => resolve())),
+    close: () =>
+      new Promise((resolve) => {
+        server.closeAllConnections();
+        server.close(() => resolve());
+      }),
   };
 }
 

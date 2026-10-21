@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { canActHint, jwtClaims, readRoles, safeReturnTo } from '../src/server/auth.ts';
+import { jwtClaims, safeReturnTo } from '../src/server/auth.ts';
 import { type Session, SessionStore } from '../src/server/sessions.ts';
 
 const jwt = (claims: Record<string, unknown>) =>
@@ -13,26 +13,9 @@ test('safeReturnTo only accepts local paths', () => {
   }
 });
 
-test('roles are read the way Pingwarden reads its claim', () => {
-  assert.deepEqual(readRoles({ scope: 'openid pingwarden:admin' }, 'scope'), ['openid', 'pingwarden:admin']);
-  assert.deepEqual(readRoles({ realm_access: { roles: ['a', 'b'] } }, 'realm_access.roles'), ['a', 'b']);
-  assert.deepEqual(
-    readRoles({ resource_access: { pingwarden: { roles: ['admin'] } } }, 'resource_access.pingwarden.roles'),
-    ['admin'],
-  );
-  assert.deepEqual(readRoles({ 'https://example.com/roles': ['x'] }, 'https://example.com/roles'), ['x']);
-  assert.deepEqual(readRoles({ groups: [1, 'ok', null] }, 'groups'), ['ok']);
-  assert.deepEqual(readRoles({}, 'realm_access.roles'), []);
-  assert.deepEqual(readRoles({ roles: { admin: true } }, 'roles'), []);
-});
-
-test('the admin hint needs a configured claim and a JWT', () => {
-  const cfg = { rolesClaim: 'roles', adminRoles: ['pingwarden-admin'] };
-  assert.equal(canActHint(jwt({ roles: ['pingwarden-admin'] }), cfg), true);
-  assert.equal(canActHint(jwt({ roles: ['pingwarden-read'] }), cfg), false);
-  assert.equal(canActHint(jwt({}), cfg), false);
-  assert.equal(canActHint('opaque-token', cfg), null);
-  assert.equal(canActHint(jwt({ roles: ['pingwarden-admin'] }), { rolesClaim: null, adminRoles: [] }), null);
+test('JWT claims are read without verification, for the expiry only', () => {
+  assert.deepEqual(jwtClaims(jwt({ exp: 1792580000 })), { exp: 1792580000 });
+  assert.equal(jwtClaims('opaque-token'), null);
   assert.equal(jwtClaims('a.!!!.c'), null);
 });
 
@@ -44,7 +27,7 @@ const session = (over: Partial<Session> = {}): Session => ({
   refreshToken: null,
   idToken: null,
   expiresAt: Date.now() + 3600_000,
-  canAct: null,
+  access: {},
   ...over,
 });
 

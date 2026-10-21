@@ -10,24 +10,40 @@ maintenance windows, and a board for wall displays.
 ![The monitor list: monitors by group, with their status, 24-hour history, uptime and latency](docs/screenshot.png)
 
 - **Monitors**: live status, grouped by Pingwarden's groups (or sorted by severity), with a 24-hour
-  history bar, uptime, latency and last check. Filter by text, status, type, tag or group.
-  Certificates expiring within 30 days are listed above the monitors.
+  history bar, uptime, latency and last check. Filter by text, status, type, tag or group; save
+  filter sets as views and pin monitors to the top (kept in the browser). Acknowledged and
+  silenced monitors are marked.
 - **Monitor details**: status and since when, the last message, dependencies and their state,
-  notifiers, maintenance, certificate expiry; uptime over 24 hours, 7 days, 30 days and 1 year;
-  latency and status over 24 hours to 1 year (with a data table); raw checks, status changes
-  and the notifications sent about it.
+  notifiers, maintenance, certificate expiry, SLO and error budget; uptime over 24 hours, 7 days,
+  30 days and 1 year; latency and status over 24 hours to 1 year (with a data table); raw checks,
+  status changes, the notifications sent about it, and its effective configuration.
 - **Events**: every status change, with how long each state lasted, outages and total downtime,
-  and why a change was not notified (dependency down, flapping, maintenance).
+  and why a change was not notified (dependency down, flapping, maintenance, silence).
+- **Reliability**: per month (or the last 30 days), each monitor's uptime against its SLO, the
+  error budget used, outages, downtime, MTTR and MTBF. Export as CSV, or print to PDF.
+- **Certificates**: every TLS certificate by expiry date.
+- **Dependencies**: the `depends_on` graph, coloured by status.
 - **Notifications**: each notifier with its delivery rate, last result and last error; monitors
   that notify nobody; the full delivery log.
-- **Maintenance**: windows, whether they are active and until when, and the monitors they cover.
+- **Maintenance**: windows from the configuration and ad-hoc ones, whether they are active and
+  until when, and the monitors they cover. Start a window for monitors, groups, tags or
+  everything, and end it early.
 - **System**: Pingwarden's version, leadership and database; groups and tags.
-- **Board**: every monitor as a tile, problems first and larger, for a wall display.
-- **Actions** (when allowed): check now, pause and resume, send a test notification, reload
-  Pingwarden's configuration.
+- **Board**: every monitor as a tile, problems first and larger, for a wall display; with
+  several Pingwarden instances, all of them on one board.
+- **Live**: changes arrive through Pingwarden's event stream (polling with an older
+  Pingwarden). Optional desktop notifications and a sound when a monitor goes down.
+- **Actions** (when allowed): check now, pause and resume, acknowledge (stops reminders until
+  the monitor recovers), silence notifications for a while, start or end maintenance, send a
+  test notification, reload Pingwarden's configuration.
+- **Several Pingwarden instances** in one dashboard, with a switcher.
 
 The browser only talks to this dashboard; the dashboard talks to Pingwarden. Pingwarden's API
 can stay on an internal network and needs no CORS.
+
+Acknowledging, silencing, ad-hoc maintenance, SLOs, the live stream, monitor configurations and
+"who may act" need a Pingwarden with its `/api/v1/me` endpoint; with an older one, the dashboard
+leaves those out and polls.
 
 ## Quick start
 
@@ -76,9 +92,6 @@ PUBLIC_URL=https://status.example.com
 OIDC_ISSUER=https://auth.example.com/realms/home
 OIDC_CLIENT_ID=pingwarden-ui
 OIDC_CLIENT_SECRET=…
-# Optional: grey out actions at once for users without the admin role
-OIDC_ROLES_CLAIM=realm_access.roles
-OIDC_ADMIN_ROLES=pingwarden-admin
 ```
 
 - Register a client with the redirect URI `PUBLIC_URL/auth/callback` (and the post-logout
@@ -88,7 +101,9 @@ OIDC_ADMIN_ROLES=pingwarden-admin
   provider for both. Providers that take an audience or resource parameter instead (Auth0,
   RFC 8707) get it from `OIDC_AUTH_PARAMS=audience=pingwarden`.
 - A user Pingwarden refuses (no `read` or `admin` role, wrong audience) gets no session and
-  sees why.
+  sees why. Who may act is asked of Pingwarden (`/api/v1/me`): users with read access see the
+  actions greyed out.
+- With several instances, each must accept the provider's tokens (same issuer and audience).
 - Sessions live in memory: a restart signs everyone out (the next page load goes through the
   provider again, usually without a prompt). Run one instance, or use sticky sessions.
 
@@ -120,6 +135,8 @@ PINGWARDEN_TOKEN=…
 | Variable                                              | Meaning                                                                   |
 | ----------------------------------------------------- | ------------------------------------------------------------------------- |
 | `PINGWARDEN_URL`                                      | Pingwarden's base URL, e.g. `http://pingwarden:8080` (required)           |
+| `PINGWARDEN_NAME`                                     | Its name in the UI (default: the URL's host)                              |
+| `PINGWARDEN_<n>_URL`, `_NAME`, `_ID`, `_TOKEN`        | Several instances, instead of the single-instance variables               |
 | `AUTH_MODE`                                           | `oidc` or `token` (required)                                              |
 | `PINGWARDEN_TOKEN`                                    | API token for `AUTH_MODE=token`                                           |
 | `READ_ONLY`                                           | Never relay actions; default `true` with `token`, `false` with `oidc`     |
@@ -127,11 +144,11 @@ PINGWARDEN_TOKEN=…
 | `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` | The client at your provider (no secret: a public client)                  |
 | `OIDC_TOKEN_AUTH_METHOD`                              | `client_secret_basic` (default with a secret), `_post`, `_jwt`, `none`    |
 | `OIDC_SCOPES`, `OIDC_AUTH_PARAMS`                     | Requested scopes (`openid profile email`); extra authorization parameters |
-| `OIDC_ROLES_CLAIM`, `OIDC_ADMIN_ROLES`                | Optional hint mirroring Pingwarden's `claim` and `admin`                  |
 | `SESSION_TTL_HOURS`                                   | Sign in again after this long (12)                                        |
 | `LISTEN_HOST`, `PORT`                                 | Default `127.0.0.1:3000` (`0.0.0.0` in the image)                         |
 | `ALLOWED_HOSTS`                                       | Host names accepted besides localhost and `PUBLIC_URL`'s (`*` = any)      |
-| `REFRESH_SECONDS`, `PINGWARDEN_TIMEOUT_SECONDS`       | Live data refresh (15); Pingwarden request timeout (10)                   |
+| `REFRESH_SECONDS`, `PINGWARDEN_TIMEOUT_SECONDS`       | Refresh without the live stream (15); Pingwarden request timeout (10)     |
+| `FRAME_ANCESTORS`                                     | Origins that may embed the dashboard in a frame (default: none)           |
 
 A mistake stops the server with a list of every problem.
 
@@ -142,13 +159,17 @@ A mistake stops the server with a list of every problem.
 - **Pingwarden authorises everything** with OIDC: the dashboard forwards the user's token and
   never grants more than Pingwarden does. It only relays an explicit list of endpoints, with
   validated identifiers and query parameters.
-- **Actions** are logged (`[action] oidc:alice: pause web → HTTP 200`), and Pingwarden logs
+- **Actions** are logged (`[action] oidc:alice on main: pause web → HTTP 200`), and Pingwarden logs
   them with the caller too.
 - **CSRF**: changes must be same-origin (Fetch Metadata / `Origin`) and carry an
   `X-Pingwarden-UI` header, which forms on other sites cannot send.
 - **DNS rebinding**: requests for other host names than localhost, `PUBLIC_URL`'s host and
   `ALLOWED_HOSTS` are refused (this matters for `AUTH_MODE=token`, which has no login).
-- **Content Security Policy**: no inline script or style, no framing.
+- **Content Security Policy**: no inline script or style, no framing unless `FRAME_ANCESTORS`
+  lists the embedding sites. Embedding works in token mode; with OIDC only on the same site,
+  since the session cookie is `SameSite=Lax`.
+- **Per-browser data**: saved views, pinned monitors, the theme and alert settings live in the
+  browser's storage, never on the server.
 
 ## Development
 

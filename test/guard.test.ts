@@ -8,6 +8,7 @@ const http = (over: Partial<{ host: string; publicUrl: string | null; allowedHos
   port: 3000,
   publicUrl: null,
   allowedHosts: [],
+  frameAncestors: [],
   ...over,
 });
 

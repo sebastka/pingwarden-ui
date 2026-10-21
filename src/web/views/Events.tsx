@@ -1,6 +1,5 @@
 import { useMemo } from 'react';
 import { type Event, STATUSES } from '../../shared/pingwarden.ts';
-import { api } from '../api.ts';
 import { Icon } from '../components/icons.tsx';
 import { Empty, ErrorBanner, MonitorLink, Segmented, Spinner, StatusBadge } from '../components/ui.tsx';
 import { useLive } from '../context.ts';
@@ -14,7 +13,7 @@ import { STATUS_META, statusOf } from '../status.ts';
 const LIMIT = 10_000;
 
 export function EventsView({ params, update }: { params: Params; update: (p: Params, replace?: boolean) => void }) {
-  const { byId, me } = useLive();
+  const { byId, me, api, changes, streaming } = useLive();
   const now = useNow(30);
   const range = rangeOf(params.range, '7d');
   const events = usePoll(
@@ -22,8 +21,8 @@ export function EventsView({ params, update }: { params: Params; update: (p: Par
       const to = Date.now();
       return api.events({ from: to - range.ms, to, limit: LIMIT });
     },
-    [range.id],
-    me.refreshSeconds * 2,
+    [range.id, changes],
+    streaming ? null : me.refreshSeconds * 2,
   );
   const q = (params.q ?? '').toLowerCase();
   const to = params.to ?? '';

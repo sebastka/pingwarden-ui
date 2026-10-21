@@ -28,6 +28,8 @@ defaults:
   notify: [webhook-ok]
   renotify_every: 15m
   flapping: { window: 1h, max_transitions: 6 }
+  # Uptime target shown with error budgets in the dashboard (needs a Pingwarden with `slo`).
+  slo: 99.5
 
 notifiers:
   # Delivers: Pingwarden's own push endpoint, which reports the webhook-receiver monitor up.

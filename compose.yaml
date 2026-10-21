@@ -27,7 +27,8 @@ services:
       - '127.0.0.1:${DEV_PINGWARDEN_PORT:-8081}:8081'
 
   pingwarden:
-    image: ghcr.io/sebastka/pingwarden:edge@sha256:5c3e49d40de0d477c7009a18097aeb493cd8f86fbdd53b2b2538b7e22404dcd4
+    # PINGWARDEN_IMAGE runs another build, e.g. one made from a Pingwarden checkout.
+    image: ${PINGWARDEN_IMAGE:-ghcr.io/sebastka/pingwarden:edge@sha256:5c3e49d40de0d477c7009a18097aeb493cd8f86fbdd53b2b2538b7e22404dcd4}
     restart: unless-stopped
     network_mode: service:mock-oidc
     depends_on:

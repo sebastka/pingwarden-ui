@@ -20,10 +20,11 @@ what we could do instead. Entries marked ⚠️ are the ones most worth reviewin
 
 ### D2. A backend for the frontend: the browser never talks to Pingwarden ⚠️
 
-- **Choice:** the Node server relays an explicit list of Pingwarden endpoints (18: every read of
-  the OpenAPI spec and the five actions) and adds two of its own (`/api/me`, `/api/history`).
-  Identifiers must match Pingwarden's id rule and query parameters are allow-listed and
-  validated before anything is sent. Bodies and status codes pass through unchanged.
+- **Choice:** the Node server relays an explicit list of Pingwarden endpoints (every read of the
+  OpenAPI spec, the actions and the live stream), under `/api/i/<instance>/…` (D17), and adds
+  two of its own (`/api/me`, `…/history`). Identifiers must match Pingwarden's id rule, query
+  parameters are allow-listed and validated, and action bodies are rebuilt from the known,
+  type-checked fields before anything is sent. Answers pass through unchanged.
 - **Why:**
   - _Token mode_ (D3) needs a credential that must not reach the browser. Only a server can hold it.
   - _OIDC_: tokens stay out of browser storage, so an XSS cannot steal them. The browser holds
@@ -44,7 +45,7 @@ what we could do instead. Entries marked ⚠️ are the ones most worth reviewin
   - `oidc`: users sign in; each request to Pingwarden carries **the user's own access token**.
     The UI has no role configuration of its own: Pingwarden's `server.auth.oidc` (`read`,
     `admin`) is the single authority.
-  - `token`: no sign-in; the server uses `PINGWARDEN_TOKEN` (or no token with Pingwarden's
+  - `token`: no sign-in; the server uses each instance's API token (or none, with Pingwarden's
     `anonymous_read`). **Read-only by default** (`READ_ONLY=true`), because anyone who reaches
     the page could otherwise pause monitors. `READ_ONLY=false` hands the decision to the token's
     scope.
@@ -53,29 +54,34 @@ what we could do instead. Entries marked ⚠️ are the ones most worth reviewin
   the team) give the same result.
 - `READ_ONLY=true` works in OIDC mode too, for a view-only deployment.
 
-### D4. Who may act: Pingwarden decides, the UI only hints ⚠️
+### D4. Who may act: Pingwarden says so ⚠️
 
-- **At sign-in**, the callback calls Pingwarden's `/api/v1/status` with the new access token
-  before creating a session. A 401 (issuer, audience) or 403 (no role) ends the sign-in with an
-  explanation, and no session exists for a user Pingwarden would refuse.
-- **Actions** are shown unless known to be refused. `canAct` is `true`, `false` or `null`
-  (unknown); unknown is shown as enabled:
-  - optionally, `OIDC_ROLES_CLAIM` + `OIDC_ADMIN_ROLES` mirror Pingwarden's `claim` and `admin`,
-    and the access token's claims give the answer at sign-in. This is display only: the token
-    came straight from the provider's token endpoint, and Pingwarden checks every action;
-  - otherwise the first refused action (403) greys the buttons out for the rest of the session,
-    with the reason in the tooltip.
-- **Why not ask Pingwarden:** it has no "who am I / what may I do" endpoint. One would remove the
-  hint configuration (see "For Pingwarden" below).
+- **At sign-in**, the callback calls `/api/v1/status` of every instance with the new access token
+  before creating a session. When every instance refuses (401: issuer or audience; 403: no
+  role), the sign-in ends with an explanation, and no session exists. Unreachable instances do
+  not block the sign-in.
+- **Actions** come from Pingwarden's `GET /api/v1/me` (`scope: read | admin`), asked per instance
+  and kept for 5 minutes (per session with OIDC, per instance in token mode). A read scope greys
+  the action buttons out, with the reason in the tooltip; `READ_ONLY=true` greys them out
+  everywhere.
+- **Older Pingwarden** (no `/me`): `canAct` is unknown and the actions are shown; the first
+  refused action (403) greys them out for the rest of the session. The first version had an
+  `OIDC_ROLES_CLAIM`/`OIDC_ADMIN_ROLES` hint that mirrored Pingwarden's role settings: it is
+  gone, and setting it is now a configuration error that says so.
 
 ### D5. Sessions in memory ⚠️
 
 - **Choice:** sessions (user name, access, refresh and ID tokens) live in a `Map` keyed by the
   SHA-256 of the cookie value; pending logins expire after 10 minutes and are capped at 10,000.
-  Sessions end after `SESSION_TTL_HOURS` (12), when a refresh fails, or when Pingwarden stops
-  accepting the token (a relayed 401 drops the session; the UI then signs in again).
+  Sessions end after `SESSION_TTL_HOURS` (12), or when a refresh fails.
 - **Refresh:** an access token within 30 s of its expiry is refreshed before use, one refresh
-  per session at a time (refresh tokens may rotate), and the new token's roles update the hint.
+  per session at a time (refresh tokens may rotate); what the user may do is asked again after
+  a refresh.
+- **A token Pingwarden refuses (401)** is refreshed once and the request retried. If Pingwarden
+  still refuses it, the dashboard shows Pingwarden's reason and keeps the session. The first
+  version ended the session, but signing in again only goes through the provider back to the
+  same refusal: a loop, and with several instances one misconfigured instance would sign the
+  user out of all of them.
 - **Cost:** a restart signs everyone out; the next page load goes through the provider, which
   usually signs the user in without a prompt. Several replicas need sticky sessions.
 - **Alternatives:**
@@ -92,17 +98,20 @@ what we could do instead. Entries marked ⚠️ are the ones most worth reviewin
   listen address). It matters for token mode, which has no login: without it, a malicious page
   could read an internal dashboard through a rebinding name. `/api/health` is exempt, since
   container and Kubernetes probes use the pod IP. `ALLOWED_HOSTS=*` switches the guard off.
-- **CSP:** `default-src 'self'`, no inline script or style, `frame-ancestors 'none'`. React's
+- **CSP:** `default-src 'self'`, no inline script or style, `frame-ancestors 'none'` unless
+  `FRAME_ANCESTORS` (D22) lists origins. React's
   `style={…}` sets styles through the CSSOM, which CSP allows. The few server-rendered pages
   (sign-in errors, signed out) have no script and their own CSP that allows their inline style;
   the browser walk-through caught them being blocked by the main policy.
-- **Audit:** every action is logged as `[action] oidc:<user>: <what> → HTTP <status>`
-  (`token:` in token mode); Pingwarden logs the caller of admin actions too.
+- **Audit:** every action is logged as `[action] oidc:<user> on <instance>: <what> → HTTP
+<status>` (`token` in token mode); Pingwarden logs the caller of admin actions too.
 
 ### D7. Pingwarden's API types by hand, checked against its spec
 
-- **Choice:** `src/shared/pingwarden.ts` is written from Pingwarden's `docs/openapi.yaml` (commit
-  `3d31819`). A copy of the spec is in `test/fixtures/`; `test/openapi.test.ts` fails when the
+- **Choice:** `src/shared/pingwarden.ts` is written from Pingwarden's `docs/openapi.yaml`, now
+  including the additions of D23. Fields and endpoints that came with those are marked "newer"
+  and optional, so the UI keeps working against an older Pingwarden. A copy of the spec is in
+  `test/fixtures/`; `test/openapi.test.ts` fails when the
   enums (statuses, monitor types, event kinds, notifier types, uptime windows) or the fields the
   UI uses drift from it, or when a relayed path is not in the spec.
 - **Why not `openapi-typescript`** (which Pingwarden's docs suggest): it is one more dev
@@ -114,35 +123,40 @@ what we could do instead. Entries marked ⚠️ are the ones most worth reviewin
 
 ### D8. Views and navigation
 
-- **Monitors** is the home page; **Events**, **Notifications**, **Maintenance** and **System**
-  are tabs; **Board** is a separate full-screen view. A monitor's details open in a drawer over
+- **Monitors** is the home page; **Events**, **Reliability**, **Certificates**, **Dependencies**,
+  **Notifications**, **Maintenance** and **System** are tabs (a menu below 1440 px); **Board**
+  is a separate full-screen view. A monitor's details open in a drawer over
   any view. Groups and tags have no page of their own: they are the grouping and filters of the
   monitor list, and tables on the System page.
-- **State in the query string** (`?view=events&range=30d&m=web`): reload,
+- **State in the query string** (`?i=office&view=events&range=30d&m=web`): reload,
   back and shared links work.
 - **The tab title counts monitors that are down** (`(2 down) Monitors · Pingwarden`), so a
   background tab shows trouble.
 
-### D9. Live data by polling
+### D9. Live data: Pingwarden's event stream, polling as the fallback
 
-- **Choice:** the monitor list (and the views' data) reload every `REFRESH_SECONDS` (15) while the
-  page is visible, and at once when it becomes visible again. History bars reload every minute.
-  After a failed reload the last data stays, with "not updating" in the header and a banner
-  saying how old it is.
-- **Why:** Pingwarden has no push channel (SSE, WebSocket), and its monitor list is one cheap
-  request.
-- **Alternative:** the server polls Pingwarden once and pushes changes to every browser over
-  SSE. Worth it for many simultaneous viewers; Pingwarden emitting SSE itself would be better
-  still.
+- **Choice:** the browser opens an `EventSource` on `/api/i/<instance>/stream`, which relays
+  Pingwarden's `GET /api/v1/stream` with the user's (or the instance's) token. Transitions,
+  notifications, acknowledgements, maintenance changes and reloads trigger a reload of the
+  monitor list (debounced 300 ms) and of whatever the open view shows. While the stream is
+  connected, polling drops to every 2 minutes as a safety net; the header says "live".
+- **Relay length:** each relayed stream ends after 15 minutes, or 30 s before the user's access
+  token expires. The browser reconnects by itself and the new stream starts with a fresh token,
+  so a stream never outlives the token Pingwarden checked when it opened.
+- **Fallback:** with an older Pingwarden (404) or when its 64 streams are taken (503), the
+  `EventSource` gives up; the UI polls every `REFRESH_SECONDS` (15) and tries the stream again a
+  minute later. After a failed reload the last data stays, with "not updating" in the header
+  and a banner saying how old it is.
+- **One stream per browser tab:** Pingwarden caps streams at 64. Fanning one upstream stream out
+  to many browsers would need the same token for all of them, which is only true in token mode.
+  _Revisit when_ many wall displays share one dashboard.
 
-### D10. The 24-hour history bars come from one composite request ⚠️
+### D10. The 24-hour history bars come from one request
 
-- **Choice:** `/api/history?hours=24` reads the monitor list, then each monitor's hourly
-  rollups, 8 at a time, and returns them together. A monitor whose rollups fail is listed in
-  `failed` rather than failing the whole answer.
-- **Cost:** N + 1 requests to Pingwarden per viewer per minute (cheap: rollups are pre-aggregated
-  tables). No caching across users: each user's token is checked by Pingwarden every time.
-- **Alternative:** a Pingwarden endpoint returning recent rollups of every monitor at once.
+- **Choice:** `…/history?hours=24` uses Pingwarden's bulk `GET /api/v1/rollups` (one SQL query for
+  every monitor). With an older Pingwarden (404), it falls back to the monitor list and each
+  monitor's hourly rollups, 8 at a time; a monitor whose rollups fail is listed in `failed`.
+- **No caching across users:** each user's token is checked by Pingwarden every time.
 
 ### D11. Status semantics
 
@@ -177,8 +191,8 @@ what we could do instead. Entries marked ⚠️ are the ones most worth reviewin
 - **Notifier health:** deliveries, success rate, last result and last error per notifier are
   computed from the delivery log of the period. The page also lists **monitors that notify
   nobody** and notifiers no monitor uses.
-- **Per-monitor deliveries** (monitor details) are filtered from the period's log in the browser:
-  Pingwarden's `/notifications` cannot filter by monitor.
+- **Per-monitor deliveries** (monitor details) use Pingwarden's `/notifications?monitor=`, and
+  are filtered in the browser too, since an older Pingwarden ignores that parameter.
 - **Limits:** lists are read with Pingwarden's maximum `limit` (10,000); a full page shows a
   warning to choose a shorter period.
 
@@ -186,8 +200,8 @@ what we could do instead. Entries marked ⚠️ are the ones most worth reviewin
 
 ### D14. A real Pingwarden for development and the tests ⚠️
 
-- `compose.yaml` runs Pingwarden (the published `edge` image, pinned by digest: the first one
-  with OIDC support), PostgreSQL 18 and
+- `compose.yaml` runs Pingwarden (the published `edge` image pinned by digest, or any image
+  through `PINGWARDEN_IMAGE`, e.g. one built from a checkout), PostgreSQL 18 and
   [mock-oauth2-server](https://github.com/navikt/mock-oauth2-server).
   `dev/pingwarden/` holds monitors in every state: up, degraded (a 1 ms latency budget), down
   with a dependency, pending/down push monitors, maintenance, disabled, nested groups, external
@@ -224,58 +238,138 @@ what we could do instead. Entries marked ⚠️ are the ones most worth reviewin
 
 ### D16. What I verified, and what not ⚠️
 
-- **Verified** (all on zeus):
-  - `npm run check`: typecheck, ESLint, Prettier, 39 tests. 8 of them run against the compose
-    stack: every read in token mode, a read token refused an action, and OIDC through the mock
-    provider (an admin signs in and acts; the access token is refreshed; a reader is refused an
-    action and sees actions greyed out; a user without a role gets no session; a stolen callback
-    is refused; logout ends the provider session).
-  - A Chromium walk-through of the production build in OIDC mode: sign-in through the mock's
-    form, every view, tooltips, check now, light and dark, desktop and phone width, sign-out.
-    It caught the CSP blocking the sign-in pages' inline style (D6), which is fixed.
+- **Verified** (all on zeus, the second round against a Pingwarden image built from its working
+  tree, `pingwarden:features`):
+  - `npm run check`: typecheck, ESLint, Prettier, 56 tests, twice in a row (the end-to-end
+    tests leave nothing behind). 13 run against the compose stack:
+    - token mode: every read, a read token refused an action;
+    - OIDC through the mock provider: an admin signs in and acts; the access token is
+      refreshed; a reader sees actions greyed out (Pingwarden's `/me`) and is refused one; a
+      user without a role gets no session; a stolen callback is refused; logout ends the
+      provider session;
+    - the new features: the bulk history, acknowledge and silence and their undo, a runtime
+      maintenance window applied and ended, the effective configuration without secrets, and
+      an event arriving on the relayed stream.
+  - Against the older `edge` Pingwarden too: everything falls back (polling, per-monitor
+    history, no runtime controls, "needs a newer version" for the configuration).
+  - Chromium walk-throughs of the production build in OIDC mode: every view, light and dark,
+    desktop and phone width (no horizontal overflow), pins and saved views, and every runtime
+    control used through the UI (acknowledge with a comment, silence, maintenance from the
+    drawer and from the form, end, undo), each in the audit log. A change made directly in
+    Pingwarden reached the open page in about 0.3 s through the stream.
+  - The walk-throughs found and led to fixes for:
+    - the CSP blocking the sign-in pages' inline style (D6);
+    - an older Pingwarden's empty 404 being taken for "unreachable", which defeated the
+      fallbacks;
+    - streams piling up: pages in the back/forward cache kept theirs open until Chromium's six
+      connections per host were used up, and the relay to Pingwarden outlived the browser
+      (now closed on `pagehide`, and on the Node response's `close`);
+    - toasts covering the drawer's actions (moved to the bottom), and menus that stayed open
+      over other buttons;
+    - MTBF crediting a new monitor with the whole period.
   - The Docker image: built on the `dhi.io` base, runs as uid 1000 with a read-only root
     filesystem and no capability, serves the UI and relays to Pingwarden.
 - **Not verified:**
   - a real identity provider (Keycloak, Authentik, Zitadel): only the mock;
+  - several instances against real Pingwardens (covered by unit tests with two fake ones);
   - the GitHub workflows (the repository is not on GitHub yet), including whether the runner can
     pull `ghcr.io/sebastka/pingwarden` without a login (it must be public);
+  - the desktop notification and the sound themselves (headless Chromium has neither); the
+    "went down" detection that triggers them is unit-tested;
+  - embedding in another site's frame (only the headers are tested);
   - many monitors: the dev stack has 14. The list is not virtualised; a few hundred monitors
     should be fine, thousands would need paging;
   - a Pingwarden standby (the API answers 503; the UI shows the error);
   - MariaDB behind Pingwarden (it makes no difference to the API).
 
-## For Pingwarden
+## Features added in the second round
 
-Things noticed while building against its API, which would simplify the UI or fix a rough edge:
+### D17. Several Pingwarden instances ⚠️
 
-- **A "who am I" endpoint** (`GET /api/v1/me` → name, scope): would replace the roles hint and
-  the learn-from-403 logic (D4).
-- **Bulk recent history** (rollups of every monitor in one request) would replace the fan-out
-  of D10.
-- **Filter the delivery log by monitor** (`/notifications?monitor=`), like the events.
-- **Server-sent events** for status changes would replace polling (D9).
-- **`cert_expiry` is in seconds** while every other timestamp is in milliseconds.
-- **Does a `method: GET` webhook send the JSON body?** The mock provider hung on such a request
-  (D14); a GET with a body is unusual and some servers reject or stall on it. To check.
+- **Choice:** numbered blocks `PINGWARDEN_<n>_URL`, `_NAME`, `_ID`, `_TOKEN`; `PINGWARDEN_URL`
+  (with `PINGWARDEN_NAME` and `PINGWARDEN_TOKEN`) stays as the single-instance shorthand, the
+  instance `main`. Every API path names its instance (`/api/i/<id>/…`), and so does the UI's URL
+  (`?i=<id>`) when there is more than one.
+- **One instance at a time:** a switcher in the header shows each instance's name and how many
+  monitors are down there. Views, saved views and pins are per instance. The board can show
+  every instance at once (`?view=board&i=all`), problems first; it polls in that mode.
+- **OIDC:** the same user token goes to every instance, so each must trust the same provider and
+  audience. An instance that refuses the token shows the error; the others keep working (D5).
+- **Alternative:** merging every instance into one list. Ids are only unique per instance, and
+  groups, maintenance and notifiers are separate configurations: a merged view would mostly
+  prefix and disambiguate.
+
+### D18. Acknowledge, silence and ad-hoc maintenance in the UI
+
+- **Acknowledge** (monitors that are down, pending or degraded) asks for an optional comment;
+  reminders stop until the monitor is up again. **Silence** offers 15 minutes to 7 days; every
+  notification about the monitor is suppressed until then. **Maintenance 1 h** starts a window
+  for the monitor from its details; the Maintenance page starts windows for monitors, groups,
+  tags or everything, now or later, for 30 minutes to 7 days, and ends API windows early.
+- These are runtime actions like pause: admin scope, read-only mode and the audit log apply.
+  They only show with a Pingwarden that has them (its monitors carry `acknowledged`).
+- The list marks acknowledged and silenced monitors; events show why a change was not notified.
+
+### D19. Reliability, SLOs and reports ⚠️
+
+- **SLO targets come from Pingwarden's configuration** (`slo: 99.9` on monitors, groups or
+  defaults, D23), not from the UI: they are configuration as code like everything else, and
+  every viewer sees the same targets.
+- **Periods:** the last 30 days, or a calendar month **in UTC**, since Pingwarden's daily rollups
+  are UTC days.
+- **Uptime** comes from the daily rollups (up and degraded over all non-maintenance checks).
+  **Error budget used** = (100 − uptime) / (100 − SLO): 100 % means the SLO is just met.
+- **Outages** come from the period's events: from a change to down to the monitor's next change
+  to anything else. An outage running at the start of the period counts from the start, one still
+  running counts until the end. **MTTR** averages outages that started and ended inside the
+  period; **MTBF** is the time up divided by the number of outages, counted from the monitor's
+  first results in the period (a monitor added mid-month is not credited the time before).
+- **Reports:** "CSV" downloads the table (RFC 4180, durations in seconds); "Print" uses a print
+  stylesheet (no header or controls), which the browser saves as PDF. No PDF library.
+
+### D20. Per-browser features: saved views, pins, alerts
+
+- **Saved views** (named filter sets) and **pinned monitors** (a "Pinned" section above the
+  list; they also stay in their usual place) live in the browser's `localStorage`, per instance.
+- **Alerts** (bell menu, header and board): a desktop notification and/or a two-tone sound made
+  with WebAudio (no sound file) when a monitor goes down while the page is open. Off by
+  default; the browser asks for notification permission when they are switched on. Monitors
+  that were already down, or that just appeared, do not alert.
+- **Why not on the server:** they are personal and need no account, and the dashboard keeps no
+  per-user state besides sessions. _Revisit when_ views should be shared within a team.
+
+### D21. Dependency graph and certificates
+
+- **Dependencies:** monitors that take part in a `depends_on` are laid out in columns, each one
+  column to the right of its deepest dependency, rows ordered by the mean row of their
+  dependencies (fewer crossings). Edges from a down dependency are red; hovering or focusing a
+  monitor highlights its neighbours. Cycles and unknown ids are tolerated. Hand-drawn SVG,
+  no graph library.
+- **Certificates:** every TLS monitor by expiry date, from `cert_expires_at` (falling back to the
+  older `cert_expiry` in seconds).
+
+### D22. Embedding (`FRAME_ANCESTORS`)
+
+- Lists the origins that may frame the dashboard: they go into CSP `frame-ancestors`, and
+  `X-Frame-Options` (which cannot name origins) is dropped. Default: no framing.
+- Works in token mode. With OIDC, a cross-site frame does not send the `SameSite=Lax` session
+  cookie, and providers refuse to be framed for sign-in: only same-site embedding works.
+  `SameSite=None` was not chosen, since it would weaken CSRF protection for every user.
+
+### D23. What was added to Pingwarden
+
+Implemented in Pingwarden (its DECISIONS.md has the details), each additive to `/api/v1`:
+`GET /me`; bulk `GET /rollups`; `monitor`, `notifier`, `success` and `event` filters on
+`/notifications`; `GET /stream` (server-sent events); `cert_expires_at` in milliseconds; the
+`slo` setting; acknowledge/unacknowledge and silence/unsilence; runtime maintenance windows
+(`POST /maintenance`, `POST /maintenance/{id}/end`); `GET /monitors/{id}/config` without
+secrets; and a webhook with `method: GET` no longer sends a body.
 
 ## Ideas not implemented
 
-Possible next features, roughly by value for the effort:
-
-- **Browser notifications and sound** when a monitor goes down, for the board (UI only).
-- **Incidents and reliability figures:** outages grouped per monitor with their duration, MTTR
-  and MTBF, per month (UI only, from the events).
-- **SLOs and error budgets** per monitor or group: an uptime target, the budget left and the burn
-  rate (UI only, from rollups).
-- **A dependency graph** of `depends_on` and groups, coloured by status (UI only).
-- **A certificates page:** every TLS monitor by expiry date (UI only; today a banner and chips).
-- **Saved views:** favourite filters and pinned monitors, per user (browser storage).
-- **Reports:** a monthly uptime report per group, as CSV or PDF.
-- **Embedding the board** in an iframe (Home Assistant, a wiki): a `FRAME_ANCESTORS` setting.
-- **Several Pingwarden instances** in one dashboard.
-- **Acknowledge or silence** an outage from the UI, and **ad-hoc maintenance** ("in maintenance
-  for 1 h"): these need Pingwarden runtime APIs. They are also in tension with configuration as
-  code, so they are a design decision for Pingwarden first.
-- **Show a monitor's effective configuration** (thresholds, timeout, keyword) without
-  secrets: needs Pingwarden to expose it.
+- **Shared saved views** (stored on the server, per team) instead of per browser (D20).
+- **One upstream stream for many viewers** in token mode (D9).
+- **Group SLOs:** an uptime target for a whole group, computed from its members.
+- **Annotations** on outages (cause, ticket link): needs storage, in Pingwarden or here.
+- **Persistent sessions** for replicated deployments (D5).
 - A public status page is out of scope by design: it is a separate project.

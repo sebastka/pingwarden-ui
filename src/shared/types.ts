@@ -3,18 +3,26 @@ import type { Rollup } from './pingwarden.ts';
 
 export type AuthMode = 'oidc' | 'token';
 
-export interface Me {
-  mode: AuthMode;
-  /** The signed-in user; null with AUTH_MODE=token. */
-  user: { name: string; sub: string } | null;
+export interface InstanceInfo {
+  /** Used in /api/i/{id}/… and in the UI's URLs. */
+  id: string;
+  name: string;
   /**
-   * Whether runtime actions (run now, pause, test notifier, reload) are offered: false when the
-   * UI is read-only or Pingwarden refused one, null when unknown (shown, Pingwarden decides).
+   * Whether runtime actions are offered: false when the UI is read-only or Pingwarden gives
+   * read access only, null when unknown (an older Pingwarden; shown, Pingwarden decides).
    */
   canAct: boolean | null;
   /** Why actions are not offered, when canAct is false. */
   actionsReason: string | null;
-  /** How often the UI refreshes live data. */
+}
+
+export interface Me {
+  mode: AuthMode;
+  /** The signed-in user; null with AUTH_MODE=token. */
+  user: { name: string; sub: string } | null;
+  /** At least one; the first is the default. */
+  instances: InstanceInfo[];
+  /** How often the UI refreshes live data (without a live stream). */
   refreshSeconds: number;
 }
 

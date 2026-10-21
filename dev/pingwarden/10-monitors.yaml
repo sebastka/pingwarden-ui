@@ -11,6 +11,8 @@ groups:
   - id: web
     name: Websites
     tags: [public]
+    defaults:
+      slo: 99.9
   - id: identity
     name: Identity provider
     parent: web

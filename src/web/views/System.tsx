@@ -1,5 +1,4 @@
 import type { Group } from '../../shared/pingwarden.ts';
-import { api } from '../api.ts';
 import { ActionButton, ErrorBanner, KV, Spinner, StatusBadge } from '../components/ui.tsx';
 import { useLive } from '../context.ts';
 import { plural } from '../format.ts';
@@ -7,10 +6,10 @@ import { useAsync, usePoll } from '../hooks.ts';
 import { STATUS_ORDER } from '../status.ts';
 
 export function SystemView() {
-  const { me, monitors, showMonitors } = useLive();
-  const status = usePoll(() => api.status(), [], me.refreshSeconds);
-  const groups = useAsync(() => api.groups(), [monitors.length]);
-  const tags = useAsync(() => api.tags(), [monitors.length]);
+  const { me, instance, monitors, showMonitors, api, changes, streaming } = useLive();
+  const status = usePoll(() => api.status(), [changes], streaming ? null : me.refreshSeconds);
+  const groups = useAsync(() => api.groups(), [monitors.length, changes]);
+  const tags = useAsync(() => api.tags(), [monitors.length, changes]);
   const s = status.data;
 
   return (
@@ -26,7 +25,7 @@ export function SystemView() {
       </div>
       <div className="two-col">
         <section className="card">
-          <h2>Pingwarden</h2>
+          <h2>{instance.name}</h2>
           {status.error && <ErrorBanner>{status.error.message}</ErrorBanner>}
           {s ? (
             <KV
@@ -65,13 +64,14 @@ export function SystemView() {
               ['User', me.user?.name],
               [
                 'Actions',
-                me.canAct === false
-                  ? (me.actionsReason ?? 'Not allowed')
-                  : me.canAct
+                instance.canAct === false
+                  ? (instance.actionsReason ?? 'Not allowed')
+                  : instance.canAct
                     ? 'Allowed'
                     : 'Offered; Pingwarden decides on each one',
               ],
-              ['Refresh', `every ${me.refreshSeconds} s`],
+              ['Updates', streaming ? 'Live (Pingwarden pushes changes)' : `Polled every ${me.refreshSeconds} s`],
+              ['Instances', me.instances.length > 1 && me.instances.map((i) => i.name).join(', ')],
             ]}
           />
         </section>

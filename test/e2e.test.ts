@@ -11,12 +11,21 @@ import { Auth } from '../src/server/auth.ts';
 import { loadConfig } from '../src/server/config.ts';
 import { Pingwarden } from '../src/server/pingwarden.ts';
 import type { HistoryResponse, Me } from '../src/shared/types.ts';
-import type { Monitor } from '../src/shared/pingwarden.ts';
+import type { MaintenanceWindow, Monitor, MonitorConfig } from '../src/shared/pingwarden.ts';
 import { json } from './helpers.ts';
 
 const PW = process.env.TEST_PINGWARDEN_URL;
 const ISSUER = process.env.TEST_OIDC_ISSUER ?? 'http://localhost:8090/default';
 const skip = PW ? false : 'TEST_PINGWARDEN_URL is not set (npm run dev:pingwarden, see .env.example)';
+const ADMIN = 'dev-admin-token-0123456789';
+
+/** Whether the stack's Pingwarden has /me, the stream, acknowledge, silence and runtime maintenance. */
+const newer = PW
+  ? await fetch(`${PW}/api/v1/me`, { headers: { authorization: `Bearer ${ADMIN}` } }).then(
+      (r) => r.ok,
+      () => false,
+    )
+  : false;
 
 const freePort = () =>
   new Promise<number>((resolve) => {
@@ -38,40 +47,40 @@ describe('token mode against Pingwarden', { skip }, () => {
 
   test('reads every view’s data', async () => {
     const c = cfg();
-    const app = createApp(c, new Pingwarden(c.pingwarden));
+    const app = createApp(c);
     const get = async <T>(path: string) => {
       const r = await app.request(`http://localhost${path}`);
       assert.equal(r.status, 200, `${path}: ${await r.clone().text()}`);
       return (await json(r)) as T;
     };
-    const monitors = await get<Monitor[]>('/api/monitors');
+    const monitors = await get<Monitor[]>('/api/i/main/monitors');
     assert.ok(monitors.some((m) => m.id === 'pingwarden-self'));
-    const self = await get<Monitor>('/api/monitors/pingwarden-self');
+    const self = await get<Monitor>('/api/i/main/monitors/pingwarden-self');
     assert.equal(self.type, 'http');
     for (const path of [
-      '/api/status',
-      '/api/groups',
-      '/api/tags',
-      '/api/maintenance',
-      '/api/notifiers',
-      '/api/events?limit=5',
-      '/api/notifications?limit=5',
-      '/api/monitors/pingwarden-self/heartbeats?limit=5',
-      '/api/monitors/pingwarden-self/events',
-      '/api/monitors/pingwarden-self/uptime',
-      '/api/monitors/pingwarden-self/rollups?resolution=day',
+      '/api/i/main/status',
+      '/api/i/main/groups',
+      '/api/i/main/tags',
+      '/api/i/main/maintenance',
+      '/api/i/main/notifiers',
+      '/api/i/main/events?limit=5',
+      '/api/i/main/notifications?limit=5',
+      '/api/i/main/monitors/pingwarden-self/heartbeats?limit=5',
+      '/api/i/main/monitors/pingwarden-self/events',
+      '/api/i/main/monitors/pingwarden-self/uptime',
+      '/api/i/main/monitors/pingwarden-self/rollups?resolution=day',
     ]) {
       await get(path);
     }
-    const history = await get<HistoryResponse>('/api/history');
+    const history = await get<HistoryResponse>('/api/i/main/history');
     assert.deepEqual(history.failed, []);
     assert.equal(Object.keys(history.monitors).length, monitors.length);
   });
 
   test('a read token cannot act, even with READ_ONLY=false', async () => {
     const c = cfg({ READ_ONLY: 'false' });
-    const app = createApp(c, new Pingwarden(c.pingwarden));
-    const r = await app.request('http://localhost/api/monitors/loopback/check', {
+    const app = createApp(c);
+    const r = await app.request('http://localhost/api/i/main/monitors/loopback/check', {
       method: 'POST',
       headers: { 'x-pingwarden-ui': '1' },
     });
@@ -120,13 +129,11 @@ describe('OIDC sign-in through the mock provider', { skip }, () => {
       OIDC_ALLOW_INSECURE_ISSUER: 'true',
       OIDC_CLIENT_ID: 'pingwarden-ui',
       OIDC_CLIENT_SECRET: 'mock-accepts-any-secret',
-      OIDC_ROLES_CLAIM: 'roles',
-      OIDC_ADMIN_ROLES: 'pingwarden-admin',
       STATIC_DIR: '/nonexistent',
     });
-    const pw = new Pingwarden(cfg.pingwarden);
-    auth = new Auth(cfg, pw);
-    const app = createApp(cfg, pw, auth);
+    const pws = cfg.instances.map((i) => new Pingwarden(i, cfg.pingwardenTimeoutMs));
+    auth = new Auth(cfg, pws);
+    const app = createApp(cfg, pws, auth);
     server = serve({ fetch: app.fetch, hostname: '127.0.0.1', port }) as Server;
     await new Promise((r) => server.once('listening', r));
   });
@@ -159,10 +166,10 @@ describe('OIDC sign-in through the mock provider', { skip }, () => {
     assert.equal(done.headers.get('location'), '/?view=events');
     const m = await me(b);
     assert.deepEqual(m.user, { name: 'alice', sub: 'alice' });
-    assert.equal(m.canAct, true);
-    const monitors = await b.fetch(`${base}/api/monitors`);
+    assert.equal(m.instances[0]!.canAct, newer ? true : null);
+    const monitors = await b.fetch(`${base}/api/i/main/monitors`);
     assert.equal(monitors.status, 200);
-    assert.equal((await act(b, '/api/monitors/loopback/check')).status, 200);
+    assert.equal((await act(b, '/api/i/main/monitors/loopback/check')).status, 200);
   });
 
   test('the access token is refreshed when it is about to expire', async () => {
@@ -172,7 +179,7 @@ describe('OIDC sign-in through the mock provider', { skip }, () => {
     const first = session.accessToken;
     assert.ok(session.refreshToken, 'the mock issues refresh tokens');
     session.accessExpiresAt = Date.now();
-    const r = await b.fetch(`${base}/api/status`);
+    const r = await b.fetch(`${base}/api/i/main/status`);
     assert.equal(r.status, 200);
     assert.notEqual(session.accessToken, first);
     assert.ok(session.accessExpiresAt! > Date.now() + 60_000);
@@ -181,11 +188,12 @@ describe('OIDC sign-in through the mock provider', { skip }, () => {
   test('a reader may read, and actions are greyed out after Pingwarden refuses one', async () => {
     const b = new Browser();
     await signIn(b, 'carol', { roles: ['pingwarden-read'] });
-    assert.equal((await me(b)).canAct, false, 'the roles hint knows already');
-    assert.equal((await b.fetch(`${base}/api/groups`)).status, 200);
-    const r = await act(b, '/api/monitors/loopback/pause');
+    assert.equal((await me(b)).instances[0]!.canAct, newer ? false : null, 'Pingwarden’s /me tells');
+    assert.equal((await b.fetch(`${base}/api/i/main/groups`)).status, 200);
+    const r = await act(b, '/api/i/main/monitors/loopback/pause');
     assert.equal(r.status, 403);
     assert.equal((await json(r)).error, 'admin access required');
+    assert.equal((await me(b)).instances[0]!.canAct, false, 'learned from the refusal');
   });
 
   test('a user without a Pingwarden role gets no session', async () => {
@@ -220,3 +228,123 @@ describe('OIDC sign-in through the mock provider', { skip }, () => {
     assert.equal((await b.fetch(`${base}/api/me`)).status, 401);
   });
 });
+
+describe(
+  'newer Pingwarden features through the dashboard',
+  { skip: skip || (newer ? false : 'Pingwarden has no /api/v1/me') },
+  () => {
+    const app = () =>
+      createApp(
+        loadConfig({
+          AUTH_MODE: 'token',
+          PINGWARDEN_URL: PW!,
+          PINGWARDEN_TOKEN: ADMIN,
+          READ_ONLY: 'false',
+          STATIC_DIR: '/nonexistent',
+        }),
+      );
+    const call = (a: ReturnType<typeof app>, path: string, body?: unknown) =>
+      a.request(`http://localhost/api/i/main${path}`, {
+        method: body === undefined ? 'GET' : 'POST',
+        headers: { 'x-pingwarden-ui': '1', 'content-type': 'application/json' },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+    const monitor = async (a: ReturnType<typeof app>, id: string) =>
+      (await json(await call(a, `/monitors/${id}`))) as Monitor;
+
+    test('the admin token can act, and the history comes from the bulk endpoint', async () => {
+      const a = app();
+      assert.equal((await json(await a.request('http://localhost/api/me'))).instances[0].canAct, true);
+      const h = (await json(await call(a, '/history'))) as HistoryResponse;
+      assert.deepEqual(h.failed, []);
+      assert.ok(Object.keys(h.monitors).includes('pingwarden-self'));
+      const bulk = await json(await call(a, '/rollups?resolution=day'));
+      assert.equal(bulk.resolution, 86400);
+    });
+
+    test('acknowledge and silence a down monitor, then undo both', async () => {
+      const a = app();
+      // ssh-bastion is down in the development stack.
+      assert.equal((await call(a, '/monitors/ssh-bastion/ack', { comment: 'looking into it' })).status, 200);
+      const acked = await monitor(a, 'ssh-bastion');
+      assert.equal(acked.acknowledged?.comment, 'looking into it');
+      assert.match(acked.acknowledged!.by, /admin/);
+      assert.equal(
+        (await call(a, '/monitors/pingwarden-self/ack', {})).status,
+        409,
+        'an up monitor cannot be acknowledged',
+      );
+      assert.equal((await call(a, '/monitors/ssh-bastion/silence', { duration: '1h' })).status, 200);
+      const silenced = await monitor(a, 'ssh-bastion');
+      assert.ok(silenced.silenced_until! > Date.now() + 50 * 60_000);
+      assert.equal((await call(a, '/monitors/ssh-bastion/unsilence', {})).status, 200);
+      assert.equal((await call(a, '/monitors/ssh-bastion/unack', {})).status, 200);
+      const back = await monitor(a, 'ssh-bastion');
+      assert.equal(back.acknowledged, null);
+      assert.equal(back.silenced_until ?? null, null);
+    });
+
+    test('a runtime maintenance window puts a monitor in maintenance until it is ended', async () => {
+      const a = app();
+      const id = `e2e-${Date.now()}`;
+      const created = await call(a, '/maintenance', {
+        id,
+        monitors: ['loopback'],
+        duration: '10m',
+        description: 'e2e',
+      });
+      assert.equal(created.status, 201);
+      try {
+        const listed = (await json(await call(a, '/maintenance'))) as MaintenanceWindow[];
+        const w = listed.find((x) => x.id === id)!;
+        assert.equal(w.source, 'api');
+        assert.equal(w.active, true);
+        assert.deepEqual(w.monitors, ['loopback']);
+        // The window applies at the monitor's next check: run it now. (With overlapping
+        // windows, Pingwarden names one of them.)
+        assert.equal((await call(a, '/monitors/loopback/check', {})).status, 200);
+        let m: Monitor | null = null;
+        for (let i = 0; i < 50 && m?.status !== 'maintenance'; i++) {
+          await new Promise((r) => setTimeout(r, 100));
+          m = await monitor(a, 'loopback');
+        }
+        assert.equal(m?.status, 'maintenance');
+        assert.ok(m?.maintenance);
+      } finally {
+        assert.equal((await call(a, `/maintenance/${id}/end`, {})).status, 200);
+      }
+      const after = ((await json(await call(a, '/maintenance'))) as MaintenanceWindow[]).find((x) => x.id === id);
+      assert.equal(after?.active ?? false, false);
+    });
+
+    test('the effective configuration has no secrets', async () => {
+      const a = app();
+      const cfg = (await json(await call(a, '/monitors/postgres-query/config'))) as MonitorConfig;
+      assert.equal(cfg.check.type, 'postgres');
+      assert.equal(cfg.settings.interval_seconds, 30);
+      assert.doesNotMatch(JSON.stringify(cfg), /:pingwarden@|dev-push-token|dev-webhook-receiver/);
+      const push = await json(await call(a, '/monitors/nightly-backup/config'));
+      assert.doesNotMatch(JSON.stringify(push), /dev-push-token/);
+    });
+
+    test('changes arrive on the live stream', async () => {
+      const a = app();
+      const res = await call(a, '/stream');
+      assert.equal(res.status, 200);
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      // Something that emits an event: pausing and resuming a monitor.
+      await call(a, '/monitors/loopback/pause', {});
+      await call(a, '/monitors/loopback/resume', {});
+      let text = '';
+      const deadline = Date.now() + 5000;
+      while (!/event: monitor\ndata: \{"id":"loopback"\}/.test(text) && Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        text += decoder.decode(value);
+      }
+      await reader.cancel();
+      assert.match(text, /event: monitor\ndata: \{"id":"loopback"\}/);
+    });
+  },
+);

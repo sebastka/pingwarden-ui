@@ -1,13 +1,13 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { type Group, type Monitor, MONITOR_TYPES, type Status } from '../../shared/pingwarden.ts';
-import { api } from '../api.ts';
 import { HistoryBar } from '../components/charts.tsx';
 import { Icon } from '../components/icons.tsx';
 import { Chip, Empty, ErrorBanner, InfoBanner, Segmented, StatusBadge, StatusIcon } from '../components/ui.tsx';
 import { useLive } from '../context.ts';
-import { ago, dateTime, interval, latency, percent, plural } from '../format.ts';
+import { ago, dateTime, interval, latency, percent, plural, shortTime } from '../format.ts';
 import { useAsync, useNow, usePoll } from '../hooks.ts';
-import { groupPath, matches, subtree } from '../logic.ts';
+import { useStored } from '../live.ts';
+import { groupPath, isSilenced, matches, subtree } from '../logic.ts';
 import type { Params } from '../route.ts';
 import {
   certDays,
@@ -23,6 +23,14 @@ import {
 const HOURS = 24;
 /** TLS certificates expiring within this many days are listed above the monitors. */
 const CERT_NOTICE_DAYS = 30;
+
+/** The URL parameters a saved view keeps. */
+const FILTER_KEYS = ['q', 'status', 'type', 'tag', 'group', 'by'];
+
+interface SavedView {
+  name: string;
+  params: Params;
+}
 
 const bySeverity = (a: Monitor, b: Monitor) =>
   STATUS_ORDER.indexOf(statusOf(a)) - STATUS_ORDER.indexOf(statusOf(b)) || a.name.localeCompare(b.name);
@@ -55,10 +63,14 @@ function Stat({
 }
 
 export function MonitorsView({ params, update }: { params: Params; update: (p: Params, replace?: boolean) => void }) {
-  const { monitors, openMonitor } = useLive();
-  const groups = useAsync(() => api.groups(), [monitors.length]);
-  const history = usePoll(() => api.history(HOURS), [], 60);
+  const { monitors, openMonitor, api, changes, instance } = useLive();
+  const groups = useAsync(() => api.groups(), [monitors.length, changes]);
+  const history = usePoll(() => api.history(HOURS), [changes], 60);
   const now = useNow(30);
+  // Per browser and per instance: saved filter sets, and monitors pinned to the top.
+  const [views, setViews] = useStored<SavedView[]>(`views:${instance.id}`, []);
+  const [pins, setPins] = useStored<string[]>(`pins:${instance.id}`, []);
+  const togglePin = (id: string) => setPins(pins.includes(id) ? pins.filter((p) => p !== id) : [...pins, id]);
 
   const q = params.q ?? '';
   const status = params.status ?? '';
@@ -97,6 +109,14 @@ export function MonitorsView({ params, update }: { params: Params; update: (p: P
     .sort((a, b) => a.days - b.days);
   const filtered = Boolean(q || status || type || tag || group);
   const setStatus = (s: string) => update({ status: status === s ? '' : s });
+  const current: Params = Object.fromEntries(FILTER_KEYS.filter((k) => params[k]).map((k) => [k, params[k]!]));
+  const same = (a: Params, b: Params) => JSON.stringify(a) === JSON.stringify(b);
+  const applyView = (v: SavedView) => update({ ...Object.fromEntries(FILTER_KEYS.map((k) => [k, ''])), ...v.params });
+  const saveView = () => {
+    const name = window.prompt('Name of this view', [q, status, type, tag, group].filter(Boolean).join(' · '));
+    if (!name?.trim()) return;
+    setViews([...views.filter((v) => v.name !== name.trim()), { name: name.trim(), params: current }]);
+  };
 
   return (
     <>
@@ -223,6 +243,33 @@ export function MonitorsView({ params, update }: { params: Params; update: (p: P
         </div>
       </div>
 
+      {(views.length > 0 || filtered) && (
+        <div className="saved-views" aria-label="Saved views">
+          {views.map((v) => (
+            <span key={v.name} className={`saved-view${same(v.params, current) ? ' active' : ''}`}>
+              <button type="button" className="chip chip-button" onClick={() => applyView(v)}>
+                <Icon name="bookmark" size={12} />
+                {v.name}
+              </button>
+              <button
+                type="button"
+                className="btn-link"
+                aria-label={`Forget view ${v.name}`}
+                title="Forget this view"
+                onClick={() => setViews(views.filter((x) => x !== v))}
+              >
+                <Icon name="x" size={12} />
+              </button>
+            </span>
+          ))}
+          {filtered && !views.some((v) => same(v.params, current)) && (
+            <button type="button" className="btn btn-small" onClick={saveView}>
+              <Icon name="bookmark" size={14} /> Save view
+            </button>
+          )}
+        </div>
+      )}
+
       {groups.error && <ErrorBanner>Groups could not be read: {groups.error.message}</ErrorBanner>}
       {history.error && <ErrorBanner>The 24-hour history could not be read: {history.error.message}</ErrorBanner>}
       {!monitors.length ? (
@@ -236,6 +283,8 @@ export function MonitorsView({ params, update }: { params: Params; update: (p: P
           slots={slots}
           now={now}
           showGroupColumn={by === 'flat' || Boolean(status)}
+          pins={pins}
+          togglePin={togglePin}
         />
       )}
       <p className="muted small footnote">
@@ -252,6 +301,8 @@ function MonitorTable({
   slots,
   now,
   showGroupColumn,
+  pins,
+  togglePin,
 }: {
   monitors: Monitor[];
   /** Empty: a flat list. */
@@ -259,13 +310,41 @@ function MonitorTable({
   slots: Map<string, Slot[]>;
   now: number;
   showGroupColumn: boolean;
+  pins: string[];
+  togglePin: (id: string) => void;
 }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const groupMap = new Map(groups.map((g) => [g.id, g]));
   const rows: ReactNode[] = [];
-  const row = (m: Monitor, depth: number) => (
-    <MonitorRow key={m.id} m={m} slots={slots.get(m.id)} now={now} depth={depth} showGroup={showGroupColumn} />
+  const row = (m: Monitor, depth: number, key = m.id) => (
+    <MonitorRow
+      key={key}
+      m={m}
+      slots={slots.get(m.id)}
+      now={now}
+      depth={depth}
+      showGroup={showGroupColumn}
+      pinned={pins.includes(m.id)}
+      togglePin={togglePin}
+    />
   );
+
+  // Pinned monitors first (they also stay in their usual place).
+  const pinned = monitors.filter((m) => pins.includes(m.id));
+  if (pinned.length) {
+    rows.push(
+      <tr key="g:pinned" className="group-row">
+        <td colSpan={7}>
+          <span className="group-toggle static">
+            <Icon name="star" size={14} className="muted" />
+            <span className="group-name">Pinned</span>
+            <span className="muted small">{plural(pinned.length, 'monitor')}</span>
+          </span>
+        </td>
+      </tr>,
+    );
+    for (const m of pinned) rows.push(row(m, 0, `p:${m.id}`));
+  }
 
   if (!groups.length) {
     for (const m of monitors) rows.push(row(m, 0));
@@ -366,12 +445,16 @@ function MonitorRow({
   now,
   depth,
   showGroup,
+  pinned,
+  togglePin,
 }: {
   m: Monitor;
   slots: Slot[] | undefined;
   now: number;
   depth: number;
   showGroup: boolean;
+  pinned: boolean;
+  togglePin: (id: string) => void;
 }) {
   const { openMonitor } = useLive();
   const s = statusOf(m);
@@ -388,9 +471,21 @@ function MonitorRow({
         <StatusBadge status={s} small />
       </td>
       <td className="col-name" style={{ paddingLeft: 8 + depth * 18 }}>
-        <button type="button" className="name-btn" onClick={() => openMonitor(m.id)}>
-          <span className="ellipsis monitor-name">{m.name}</span>
-        </button>
+        <div className="name-line">
+          <button type="button" className="name-btn" onClick={() => openMonitor(m.id)}>
+            <span className="ellipsis monitor-name">{m.name}</span>
+          </button>
+          <button
+            type="button"
+            className={`pin${pinned ? ' pinned' : ''}`}
+            aria-pressed={pinned}
+            aria-label={pinned ? `Unpin ${m.name}` : `Pin ${m.name}`}
+            title={pinned ? 'Unpin' : 'Pin to the top (this browser)'}
+            onClick={() => togglePin(m.id)}
+          >
+            <Icon name="star" size={13} />
+          </button>
+        </div>
         <div className="monitor-sub">
           <span className="muted small ellipsis mono" title={m.target}>
             {m.target}
@@ -400,6 +495,8 @@ function MonitorRow({
           {m.enabled && m.paused && <Chip icon="pause">paused</Chip>}
           {m.flapping && <Chip icon="flap">flapping</Chip>}
           {m.maintenance && <Chip icon="wrench">{m.maintenance}</Chip>}
+          {m.acknowledged && <Chip icon="check">ack by {m.acknowledged.by.replace(/^\w+:/, '')}</Chip>}
+          {isSilenced(m, now) && <Chip icon="bellOff">silenced until {shortTime(m.silenced_until!)}</Chip>}
           {days !== null && days <= CERT_NOTICE_DAYS && (
             <span className={`chip ${days <= 7 ? 'chip-critical' : 'chip-warning'}`}>
               <Icon name="certificate" size={12} />

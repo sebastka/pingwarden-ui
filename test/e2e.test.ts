@@ -264,7 +264,12 @@ describe(
 
     test('acknowledge and silence a down monitor, then undo both', async () => {
       const a = app();
-      // ssh-bastion is down in the development stack.
+      // ssh-bastion always fails in the development stack. On a fresh stack it may not have been
+      // checked yet (unknown), which cannot be acknowledged: check it now and wait until it fails.
+      await call(a, '/monitors/ssh-bastion/check', {});
+      for (let i = 0; i < 50 && !['pending', 'down'].includes((await monitor(a, 'ssh-bastion')).status ?? ''); i++) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
       assert.equal((await call(a, '/monitors/ssh-bastion/ack', { comment: 'looking into it' })).status, 200);
       const acked = await monitor(a, 'ssh-bastion');
       assert.equal(acked.acknowledged?.comment, 'looking into it');

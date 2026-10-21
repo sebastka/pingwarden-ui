@@ -219,7 +219,7 @@ what we could do instead. Entries marked ⚠️ are the ones most worth reviewin
 - **Repository settings** to apply: a ruleset on `master` with the
   "Check (tsc + eslint + prettier + tests) & build" job required, squash merges only,
   "Allow auto-merge" and "Allow GitHub Actions to approve pull requests" on, the
-  `DHI_USERNAME`/`DHI_TOKEN` variable and secrets for Actions and Dependabot. Not done: the
+  `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN` variable and secrets for Actions and Dependabot. Not done: the
   repository does not exist on GitHub yet.
 
 ### D16. What I verified, and what not ⚠️

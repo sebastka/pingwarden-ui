@@ -1,10 +1,13 @@
 import type {
+  BulkRollupsResponse,
   EventsResponse,
   Group,
   HeartbeatsResponse,
   InstanceStatus,
+  MaintenanceRequest,
   MaintenanceWindow,
   Monitor,
+  MonitorConfig,
   Notifier,
   NotificationsResponse,
   RollupsResponse,
@@ -21,6 +24,9 @@ export class ApiError extends Error {
     this.status = status;
   }
 }
+
+/** The endpoint does not exist on this Pingwarden (an older version). */
+export const unsupported = (e: unknown) => e instanceof ApiError && (e.status === 404 || e.status === 405);
 
 let signingIn = false;
 
@@ -50,7 +56,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 /** Every state-changing request carries X-Pingwarden-UI (the server's CSRF guard). */
-const post = <T>(path: string) => request<T>(path, { method: 'POST', headers: { 'x-pingwarden-ui': '1' } });
+const post = <T>(path: string, body?: unknown) =>
+  request<T>(path, {
+    method: 'POST',
+    headers: { 'x-pingwarden-ui': '1', ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
 
 export function query(f: Record<string, string | number | boolean | null | undefined>): string {
   const p = new URLSearchParams();
@@ -67,29 +78,51 @@ export interface Range {
   limit?: number;
 }
 
-export const api = {
-  me: () => request<Me>('/api/me'),
-  status: () => request<InstanceStatus>('/api/status'),
-  monitors: () => request<Monitor[]>('/api/monitors'),
-  monitor: (id: string) => request<Monitor>(`/api/monitors/${enc(id)}`),
-  heartbeats: (id: string, r: Range = {}) =>
-    request<HeartbeatsResponse>(`/api/monitors/${enc(id)}/heartbeats${query({ ...r })}`),
-  monitorEvents: (id: string, r: Range = {}) =>
-    request<EventsResponse>(`/api/monitors/${enc(id)}/events${query({ ...r })}`),
-  uptime: (id: string) => request<UptimeResponse>(`/api/monitors/${enc(id)}/uptime`),
-  rollups: (id: string, resolution: 'hour' | 'day', r: Range = {}) =>
-    request<RollupsResponse>(`/api/monitors/${enc(id)}/rollups${query({ resolution, from: r.from, to: r.to })}`),
-  history: (hours = 24) => request<HistoryResponse>(`/api/history${query({ hours })}`),
-  groups: () => request<Group[]>('/api/groups'),
-  tags: () => request<Tag[]>('/api/tags'),
-  maintenance: () => request<MaintenanceWindow[]>('/api/maintenance'),
-  events: (r: Range = {}) => request<EventsResponse>(`/api/events${query({ ...r })}`),
-  notifiers: () => request<Notifier[]>('/api/notifiers'),
-  notifications: (r: Range = {}) => request<NotificationsResponse>(`/api/notifications${query({ ...r })}`),
+export const me = () => request<Me>('/api/me');
 
-  check: (id: string) => post<{ ok: boolean }>(`/api/monitors/${enc(id)}/check`),
-  pause: (id: string) => post<{ ok: boolean }>(`/api/monitors/${enc(id)}/pause`),
-  resume: (id: string) => post<{ ok: boolean }>(`/api/monitors/${enc(id)}/resume`),
-  testNotifier: (id: string) => post<{ ok: boolean }>(`/api/notifiers/${enc(id)}/test`),
-  reload: () => post<{ ok: boolean }>('/api/reload'),
-};
+/** The API of one Pingwarden instance. */
+export function instanceApi(inst: string) {
+  const base = `/api/i/${enc(inst)}`;
+  return {
+    instance: inst,
+    /** URL of the live event stream (EventSource). */
+    streamUrl: `${base}/stream`,
+    status: () => request<InstanceStatus>(`${base}/status`),
+    monitors: () => request<Monitor[]>(`${base}/monitors`),
+    monitor: (id: string) => request<Monitor>(`${base}/monitors/${enc(id)}`),
+    monitorConfig: (id: string) => request<MonitorConfig>(`${base}/monitors/${enc(id)}/config`),
+    heartbeats: (id: string, r: Range = {}) =>
+      request<HeartbeatsResponse>(`${base}/monitors/${enc(id)}/heartbeats${query({ ...r })}`),
+    monitorEvents: (id: string, r: Range = {}) =>
+      request<EventsResponse>(`${base}/monitors/${enc(id)}/events${query({ ...r })}`),
+    uptime: (id: string) => request<UptimeResponse>(`${base}/monitors/${enc(id)}/uptime`),
+    rollups: (id: string, resolution: 'hour' | 'day', r: Range = {}) =>
+      request<RollupsResponse>(`${base}/monitors/${enc(id)}/rollups${query({ resolution, from: r.from, to: r.to })}`),
+    bulkRollups: (resolution: 'hour' | 'day', r: Range = {}) =>
+      request<BulkRollupsResponse>(`${base}/rollups${query({ resolution, from: r.from, to: r.to })}`),
+    history: (hours = 24) => request<HistoryResponse>(`${base}/history${query({ hours })}`),
+    groups: () => request<Group[]>(`${base}/groups`),
+    tags: () => request<Tag[]>(`${base}/tags`),
+    maintenance: () => request<MaintenanceWindow[]>(`${base}/maintenance`),
+    events: (r: Range = {}) => request<EventsResponse>(`${base}/events${query({ ...r })}`),
+    notifiers: () => request<Notifier[]>(`${base}/notifiers`),
+    notifications: (r: Range & { monitor?: string } = {}) =>
+      request<NotificationsResponse>(`${base}/notifications${query({ ...r })}`),
+
+    check: (id: string) => post<{ ok: boolean }>(`${base}/monitors/${enc(id)}/check`),
+    pause: (id: string) => post<{ ok: boolean }>(`${base}/monitors/${enc(id)}/pause`),
+    resume: (id: string) => post<{ ok: boolean }>(`${base}/monitors/${enc(id)}/resume`),
+    ack: (id: string, comment?: string) =>
+      post<{ ok: boolean }>(`${base}/monitors/${enc(id)}/ack`, comment ? { comment } : {}),
+    unack: (id: string) => post<{ ok: boolean }>(`${base}/monitors/${enc(id)}/unack`),
+    silence: (id: string, duration: string) =>
+      post<{ ok: boolean }>(`${base}/monitors/${enc(id)}/silence`, { duration }),
+    unsilence: (id: string) => post<{ ok: boolean }>(`${base}/monitors/${enc(id)}/unsilence`),
+    startMaintenance: (req: MaintenanceRequest) => post<MaintenanceWindow>(`${base}/maintenance`, req),
+    endMaintenance: (id: string) => post<{ ok: boolean }>(`${base}/maintenance/${enc(id)}/end`),
+    testNotifier: (id: string) => post<{ ok: boolean }>(`${base}/notifiers/${enc(id)}/test`),
+    reload: () => post<{ ok: boolean }>(`${base}/reload`),
+  };
+}
+
+export type Api = ReturnType<typeof instanceApi>;

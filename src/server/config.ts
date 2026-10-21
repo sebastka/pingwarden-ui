@@ -19,11 +19,18 @@ export interface OidcConfig {
   authParams: Record<string, string>;
   /** Accept an http:// issuer (development against a local mock provider). */
   allowInsecureIssuer: boolean;
-  /** Where the access token lists roles, for the admin hint (Pingwarden's `claim`); null = no hint. */
-  rolesClaim: string | null;
-  /** Values of rolesClaim granting admin access in Pingwarden (its `admin` list). */
-  adminRoles: string[];
   sessionTtlHours: number;
+}
+
+/** One Pingwarden instance (PINGWARDEN_<n>_*, or the PINGWARDEN_URL shorthand). */
+export interface InstanceConfig {
+  /** Stable id in URLs and API paths. */
+  id: string;
+  name: string;
+  /** Base URL, without /api/v1. */
+  url: string;
+  /** Static API token (AUTH_MODE=token); null = none (Pingwarden's anonymous_read). */
+  token: string | null;
 }
 
 export interface Config {
@@ -34,16 +41,14 @@ export interface Config {
     publicUrl: string | null;
     /** Host header values accepted besides localhost and PUBLIC_URL's host; ["*"] = any. */
     allowedHosts: string[];
+    /** Origins that may embed the dashboard in a frame (CSP frame-ancestors); [] = none. */
+    frameAncestors: string[];
   };
-  pingwarden: {
-    /** Base URL, without /api/v1. */
-    url: string;
-    /** Static API token (AUTH_MODE=token); null = none (Pingwarden's anonymous_read). */
-    token: string | null;
-    timeoutMs: number;
-  };
+  /** At least one; the first is the one the UI opens. */
+  instances: InstanceConfig[];
+  pingwardenTimeoutMs: number;
   auth: { mode: AuthMode; oidc: OidcConfig | null };
-  /** Never relay runtime actions (run now, pause, resume, test notifier, reload). */
+  /** Never relay runtime actions (run now, pause, acknowledge, silence, maintenance, test, reload). */
   readOnly: boolean;
   refreshSeconds: number;
   staticDir: string;
@@ -120,10 +125,8 @@ function oidc(env: Env, errors: string[], publicUrl: string | null): OidcConfig 
     ['client_id', 'redirect_uri', 'response_type', 'scope', 'state', 'nonce', 'code_challenge'].includes(k),
   );
   if (reserved.length) errors.push(`OIDC_AUTH_PARAMS may not set ${reserved.join(', ')}`);
-  const rolesClaim = str(env, 'OIDC_ROLES_CLAIM') ?? null;
-  const adminRoles = list(env, 'OIDC_ADMIN_ROLES');
-  if (Boolean(rolesClaim) !== adminRoles.length > 0) {
-    errors.push('OIDC_ROLES_CLAIM and OIDC_ADMIN_ROLES must be set together');
+  for (const gone of ['OIDC_ROLES_CLAIM', 'OIDC_ADMIN_ROLES']) {
+    if (str(env, gone)) errors.push(`${gone} is no longer used: Pingwarden's /api/v1/me tells who may act`);
   }
   return {
     issuer,
@@ -133,10 +136,69 @@ function oidc(env: Env, errors: string[], publicUrl: string | null): OidcConfig 
     scopes: str(env, 'OIDC_SCOPES', 'openid profile email')!,
     authParams,
     allowInsecureIssuer,
-    rolesClaim,
-    adminRoles,
     sessionTtlHours: int(env, 'SESSION_TTL_HOURS', 12, errors, 1),
   };
+}
+
+/** The numbers n for which some <PREFIX>_<n>_* variable is set, in ascending order. */
+function numbers(env: Env, prefix: string): number[] {
+  const ns = new Set<number>();
+  const re = new RegExp(`^${prefix}_(\\d+)_[A-Z0-9_]+$`);
+  for (const key of Object.keys(env)) {
+    const m = re.exec(key);
+    if (m && env[key]?.trim()) ns.add(Number(m[1]));
+  }
+  return [...ns].sort((a, b) => a - b);
+}
+
+const INSTANCE_ID_RE = /^[a-z0-9][a-z0-9_-]{0,62}$/;
+
+/**
+ * Pingwarden instances: numbered blocks PINGWARDEN_<n>_URL, _NAME, _ID, _TOKEN, or for a single
+ * instance PINGWARDEN_URL (and PINGWARDEN_NAME, PINGWARDEN_TOKEN), which is block "main".
+ */
+function instances(env: Env, errors: string[], mode: string | undefined): InstanceConfig[] {
+  const ns = numbers(env, 'PINGWARDEN');
+  const single = str(env, 'PINGWARDEN_URL');
+  if (single && ns.length) errors.push('set either PINGWARDEN_URL or numbered PINGWARDEN_<n>_URL blocks, not both');
+  const blocks = ns.length
+    ? ns.map((n) => ({ prefix: `PINGWARDEN_${n}_`, id: String(n) }))
+    : [{ prefix: 'PINGWARDEN_', id: 'main' }];
+  const ids = new Set<string>();
+  return blocks.map(({ prefix, id: fallbackId }) => {
+    const u = url(env, `${prefix}URL`, errors, true)?.replace(/\/api\/v1$/, '') ?? '';
+    const id = str(env, `${prefix}ID`, fallbackId)!.toLowerCase();
+    if (!INSTANCE_ID_RE.test(id)) errors.push(`${prefix}ID must be lowercase letters, digits, "-" or "_", got "${id}"`);
+    if (ids.has(id)) errors.push(`${prefix}ID "${id}" is used by two instances`);
+    ids.add(id);
+    const token = str(env, `${prefix}TOKEN`) ?? null;
+    if (mode === 'oidc' && token) {
+      errors.push(`${prefix}TOKEN is only used with AUTH_MODE=token; with OIDC every request carries the user's token`);
+    }
+    let name = str(env, `${prefix}NAME`);
+    if (!name) {
+      try {
+        name = new URL(u).host;
+      } catch {
+        name = id;
+      }
+    }
+    return { id, name, url: u, token };
+  });
+}
+
+/** `https://a.example, http://localhost:8123` → validated origins for CSP frame-ancestors. */
+function origins(env: Env, name: string, errors: string[]): string[] {
+  return list(env, name).flatMap((o) => {
+    try {
+      const u = new URL(o);
+      if ((u.protocol === 'http:' || u.protocol === 'https:') && u.origin === o.replace(/\/$/, '')) return [u.origin];
+    } catch {
+      // reported below
+    }
+    errors.push(`${name}: "${o}" is not an origin (scheme://host[:port], without path)`);
+    return [];
+  });
 }
 
 export function loadConfig(env: Env = process.env): Config {
@@ -148,10 +210,6 @@ export function loadConfig(env: Env = process.env): Config {
     );
   }
   const publicUrl = url(env, 'PUBLIC_URL', errors);
-  const token = str(env, 'PINGWARDEN_TOKEN') ?? null;
-  if (mode === 'oidc' && token) {
-    errors.push('PINGWARDEN_TOKEN is only used with AUTH_MODE=token; with OIDC every request carries the user token');
-  }
 
   const cfg: Config = {
     http: {
@@ -159,12 +217,10 @@ export function loadConfig(env: Env = process.env): Config {
       port: int(env, 'PORT', 3000, errors, 1),
       publicUrl,
       allowedHosts: list(env, 'ALLOWED_HOSTS').map((h) => h.toLowerCase()),
+      frameAncestors: origins(env, 'FRAME_ANCESTORS', errors),
     },
-    pingwarden: {
-      url: url(env, 'PINGWARDEN_URL', errors, true)?.replace(/\/api\/v1$/, '') ?? '',
-      token,
-      timeoutMs: int(env, 'PINGWARDEN_TIMEOUT_SECONDS', 10, errors, 1) * 1000,
-    },
+    instances: instances(env, errors, mode),
+    pingwardenTimeoutMs: int(env, 'PINGWARDEN_TIMEOUT_SECONDS', 10, errors, 1) * 1000,
     auth: { mode: mode === 'oidc' ? 'oidc' : 'token', oidc: mode === 'oidc' ? oidc(env, errors, publicUrl) : null },
     // Without a login anyone who reaches the dashboard could pause monitors: read-only by default.
     readOnly: bool(env, 'READ_ONLY', mode !== 'oidc', errors),

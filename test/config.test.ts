@@ -29,15 +29,53 @@ test('AUTH_MODE and PINGWARDEN_URL are required', () => {
 
 test('token mode: read-only by default, token optional, /api/v1 suffix tolerated', () => {
   const c = loadConfig({ AUTH_MODE: 'token', PINGWARDEN_URL: 'http://pw:8080/api/v1/' });
-  assert.equal(c.pingwarden.url, 'http://pw:8080');
-  assert.equal(c.pingwarden.token, null);
+  assert.deepEqual(c.instances, [{ id: 'main', name: 'pw:8080', url: 'http://pw:8080', token: null }]);
   assert.equal(c.readOnly, true);
   assert.equal(c.auth.oidc, null);
   assert.equal(c.http.host, '127.0.0.1');
   assert.equal(c.refreshSeconds, 15);
   const rw = loadConfig({ AUTH_MODE: 'token', PINGWARDEN_URL: 'http://pw', PINGWARDEN_TOKEN: 't', READ_ONLY: 'false' });
   assert.equal(rw.readOnly, false);
-  assert.equal(rw.pingwarden.token, 't');
+  assert.equal(rw.instances[0]!.token, 't');
+});
+
+test('several instances as numbered blocks', () => {
+  const c = loadConfig({
+    AUTH_MODE: 'token',
+    PINGWARDEN_2_URL: 'https://pw.office.example',
+    PINGWARDEN_2_ID: 'Office',
+    PINGWARDEN_1_URL: 'http://pw.home:8080',
+    PINGWARDEN_1_NAME: 'Home',
+    PINGWARDEN_1_TOKEN: 'a',
+    PINGWARDEN_TIMEOUT_SECONDS: '5',
+  });
+  assert.deepEqual(c.instances, [
+    { id: '1', name: 'Home', url: 'http://pw.home:8080', token: 'a' },
+    { id: 'office', name: 'pw.office.example', url: 'https://pw.office.example', token: null },
+  ]);
+  assert.equal(c.pingwardenTimeoutMs, 5000);
+  const p = problems({
+    AUTH_MODE: 'token',
+    PINGWARDEN_URL: 'http://a',
+    PINGWARDEN_1_URL: 'http://b',
+    PINGWARDEN_1_ID: 'x y',
+    PINGWARDEN_3_URL: 'http://c',
+    PINGWARDEN_3_ID: 'x y',
+  });
+  assert.ok(p.some((x) => /either PINGWARDEN_URL or numbered/.test(x)));
+  assert.ok(p.some((x) => /PINGWARDEN_1_ID must be lowercase/.test(x)));
+  assert.ok(p.some((x) => /PINGWARDEN_3_ID "x y" is used by two instances/.test(x)));
+});
+
+test('FRAME_ANCESTORS takes origins only', () => {
+  const ok = loadConfig({
+    AUTH_MODE: 'token',
+    PINGWARDEN_URL: 'http://pw',
+    FRAME_ANCESTORS: 'https://ha.example http://x:8123/',
+  });
+  assert.deepEqual(ok.http.frameAncestors, ['https://ha.example', 'http://x:8123']);
+  const p = problems({ AUTH_MODE: 'token', PINGWARDEN_URL: 'http://pw', FRAME_ANCESTORS: 'https://ha.example/path *' });
+  assert.equal(p.length, 2);
 });
 
 test('OIDC mode: defaults and normalisation', () => {
@@ -48,7 +86,6 @@ test('OIDC mode: defaults and normalisation', () => {
   assert.equal(o.tokenAuthMethod, 'client_secret_basic');
   assert.equal(o.scopes, 'openid profile email');
   assert.deepEqual(o.authParams, {});
-  assert.equal(o.rolesClaim, null);
   assert.equal(o.sessionTtlHours, 12);
   const pub = loadConfig({ ...OIDC, OIDC_CLIENT_SECRET: '', OIDC_AUTH_PARAMS: 'audience=pingwarden&prompt=login' });
   assert.equal(pub.auth.oidc!.tokenAuthMethod, 'none');
@@ -74,7 +111,7 @@ test('OIDC mode: every problem is reported at once', () => {
     /OIDC_CLIENT_ID is required/,
     /client_secret_post needs OIDC_CLIENT_SECRET/,
     /OIDC_AUTH_PARAMS may not set redirect_uri/,
-    /OIDC_ROLES_CLAIM and OIDC_ADMIN_ROLES must be set together/,
+    /OIDC_ROLES_CLAIM is no longer used/,
     /SESSION_TTL_HOURS must be an integer ≥ 1/,
   ]) {
     assert.ok(

@@ -93,6 +93,29 @@ const PATHS = {
   ),
   flap: <path d="M1.5 10.5 4 5.5l2.5 5 2.5-5 2.5 5 2.5-5" />,
   maximize: <path d="M2 6V2h4M14 6V2h-4M2 10v4h4M14 10v4h-4" />,
+  star: <path d="m8 1.8 1.9 3.9 4.3.6-3.1 3 .7 4.3L8 11.6l-3.8 2 .7-4.3-3.1-3 4.3-.6z" />,
+  bookmark: <path d="M4 1.5h8v13l-4-3-4 3z" />,
+  download: <path d="M8 2v8.5M4.5 7 8 10.5 11.5 7M2 10.5v3h12v-3" />,
+  bellOff: (
+    <>
+      <path d="M3.5 11.5V7a4.5 4.5 0 0 1 7.3-3.5M12.5 6.5v5l1 1.2H5" />
+      <path d="M6.5 14a1.6 1.6 0 0 0 3 0M2 2l12 12" />
+    </>
+  ),
+  share: (
+    <>
+      <circle cx="12" cy="3.5" r="1.8" />
+      <circle cx="4" cy="8" r="1.8" />
+      <circle cx="12" cy="12.5" r="1.8" />
+      <path d="m5.6 7.1 4.8-2.7M5.6 8.9l4.8 2.7" />
+    </>
+  ),
+  printer: (
+    <>
+      <path d="M4 5.5V1.5h8v4M4 11.5H2.5v-6h11v6H12" />
+      <rect x="4" y="9" width="8" height="5.5" />
+    </>
+  ),
 } satisfies Record<string, ReactNode>;
 
 export type IconName = keyof typeof PATHS;

@@ -1,6 +1,5 @@
 import { useMemo } from 'react';
 import { EVENT_KINDS, type Notification, type Notifier, type NotifierType } from '../../shared/pingwarden.ts';
-import { api } from '../api.ts';
 import { Icon } from '../components/icons.tsx';
 import {
   ActionButton,
@@ -39,7 +38,7 @@ export function NotificationsView({
   params: Params;
   update: (p: Params, replace?: boolean) => void;
 }) {
-  const { monitors, me } = useLive();
+  const { monitors, me, api, changes, streaming } = useLive();
   const now = useNow(30);
   const range = rangeOf(params.range, '7d');
   const notifiers = useAsync(() => api.notifiers(), []);
@@ -48,8 +47,8 @@ export function NotificationsView({
       const to = Date.now();
       return api.notifications({ from: to - range.ms, to, limit: LIMIT });
     },
-    [range.id],
-    me.refreshSeconds * 2,
+    [range.id, changes],
+    streaming ? null : me.refreshSeconds * 2,
   );
   const rows = useMemo(() => log.data?.notifications ?? [], [log.data]);
   const byNotifier = useMemo(() => health(rows), [rows]);
@@ -170,6 +169,7 @@ function NotifierCard({
   active: boolean;
   onSelect: () => void;
 }) {
+  const { api } = useLive();
   const total = h ? h.ok + h.failed : 0;
   const failing = h?.last && !h.last.success;
   return (

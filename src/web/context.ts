@@ -1,12 +1,20 @@
 import { createContext, useContext } from 'react';
 import type { Monitor } from '../shared/pingwarden.ts';
-import type { Me } from '../shared/types.ts';
+import type { InstanceInfo, Me } from '../shared/types.ts';
+import type { Api } from './api.ts';
 
 export interface Live {
   me: Me;
-  /** Every monitor with its live state, refreshed every me.refreshSeconds. */
+  /** The Pingwarden instance shown. */
+  instance: InstanceInfo;
+  api: Api;
+  /** Every monitor with its live state. */
   monitors: Monitor[];
   byId: Map<string, Monitor>;
+  /** Whether Pingwarden's live stream is connected (otherwise the UI polls). */
+  streaming: boolean;
+  /** Bumped on every relevant stream event, for views that show more than the monitor list. */
+  changes: number;
   /** Reloads the live data now (after an action). */
   refresh: () => void;
   /** Opens a monitor's details. */

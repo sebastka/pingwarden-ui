@@ -220,6 +220,9 @@ h2 {
   gap: 10px;
   min-width: 0;
 }
+.updated {
+  white-space: nowrap;
+}
 .user {
   display: flex;
   align-items: center;
@@ -236,7 +239,7 @@ h2 {
   padding: 16px 20px 120px;
 }
 
-@media (max-width: 1000px) {
+@media (max-width: 1440px) {
   .btn.nav-toggle {
     display: inline-flex;
   }
@@ -1195,7 +1198,7 @@ button.stat:hover {
 
 .toasts {
   position: fixed;
-  top: calc(var(--header-h) + 10px);
+  bottom: 16px;
   right: 16px;
   z-index: 40;
   display: grid;
@@ -1315,4 +1318,297 @@ button.stat:hover {
   overflow: hidden;
   clip: rect(0 0 0 0);
   white-space: nowrap;
+}
+
+/* --- Menus, live indicator, instances ---------------------------------------------------- */
+
+.menu {
+  position: relative;
+}
+.menu > summary {
+  list-style: none;
+}
+.menu > summary::-webkit-details-marker {
+  display: none;
+}
+.menu-body {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 30;
+  min-width: 240px;
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.drawer-actions .menu-body {
+  left: 0;
+  right: auto;
+}
+.menu-title {
+  font-weight: 600;
+  font-size: 13px;
+}
+.btn-on {
+  background: var(--select);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+.live-dot {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--good-ink);
+  font-weight: 600;
+}
+.live-dot::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--good);
+}
+.instance-switch {
+  font-weight: 600;
+  max-width: 220px;
+}
+
+/* --- Saved views and pins ------------------------------------------------------------------ */
+
+.saved-views {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin: -2px 0 10px;
+}
+.saved-view {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.saved-view.active .chip {
+  background: var(--select);
+  color: var(--accent-ink);
+}
+.name-line {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.pin {
+  border: 0;
+  background: none;
+  padding: 2px;
+  cursor: pointer;
+  color: var(--text-muted);
+  opacity: 0;
+  flex: none;
+}
+tr:hover .pin,
+.pin:focus-visible,
+.pin.pinned {
+  opacity: 1;
+}
+.pin.pinned {
+  color: var(--warning);
+}
+.pin.pinned .icon {
+  fill: currentColor;
+}
+@media (hover: none) {
+  .pin {
+    opacity: 1;
+  }
+}
+
+/* --- Board sections ------------------------------------------------------------------------ */
+
+.board-instance {
+  font-size: 18px;
+  font-weight: 650;
+  color: var(--text-secondary);
+}
+.board-section + .board-section {
+  margin-top: 22px;
+}
+.board-section h2 {
+  margin: 0 0 10px;
+}
+
+/* --- Reliability --------------------------------------------------------------------------- */
+
+.kpis-4 {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+.budget {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.budget-track {
+  width: 90px;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.budget-fill {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+}
+.print-only {
+  display: none;
+}
+
+/* --- Dependency graph ---------------------------------------------------------------------- */
+
+.graph-wrap {
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-1);
+}
+.graph-wrap svg {
+  display: block;
+}
+.graph-edge {
+  fill: none;
+  stroke: var(--baseline);
+  stroke-width: 2;
+}
+.graph-edge-down {
+  stroke: var(--critical);
+}
+.graph-arrow {
+  fill: var(--baseline);
+}
+.graph-node {
+  cursor: pointer;
+  outline: none;
+}
+.graph-box {
+  fill: var(--surface-1);
+  stroke: var(--border);
+  stroke-width: 1;
+}
+.graph-node:hover .graph-box,
+.graph-node:focus-visible .graph-box {
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+.graph-stripe {
+  fill: var(--tone);
+}
+.graph-label {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  line-height: 1.25;
+  min-width: 0;
+}
+.graph-name {
+  font-weight: 600;
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.graph-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--tone-ink);
+}
+
+/* --- Forms --------------------------------------------------------------------------------- */
+
+.form-card {
+  margin-bottom: 16px;
+  max-width: 760px;
+}
+.form-card h2 {
+  margin-top: 0;
+}
+.form-row {
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.form-row-top {
+  align-items: start;
+}
+.form-row > span {
+  color: var(--text-secondary);
+  font-size: 13px;
+  display: grid;
+  gap: 6px;
+}
+.form-row input[type='text'] {
+  width: 100%;
+}
+.picker {
+  display: grid;
+  gap: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+}
+.picker-filter {
+  width: 100%;
+}
+.form-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+@media (max-width: 560px) {
+  .form-row {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+}
+.maintenance.ended {
+  opacity: 0.7;
+}
+
+/* --- Print (the reliability report, or any page) ------------------------------------------- */
+
+@media print {
+  .header,
+  .no-print,
+  .drawer,
+  .drawer-backdrop,
+  .toasts,
+  .pin {
+    display: none !important;
+  }
+  .print-only {
+    display: inline;
+  }
+  .main {
+    max-width: none;
+    padding: 0;
+  }
+  body {
+    background: #fff;
+    color: #000;
+  }
+  .card {
+    break-inside: avoid;
+  }
 }

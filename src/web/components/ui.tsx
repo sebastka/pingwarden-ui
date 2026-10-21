@@ -39,21 +39,22 @@ export function ActionButton({
 }: {
   icon: IconName;
   label: string;
+  /** The action; resolving to `false` means the user cancelled it (no toast). */
   run: () => Promise<unknown>;
   /** Toast text on success. */
   done: string;
   primary?: boolean;
   small?: boolean;
 }) {
-  const { me, refresh } = useLive();
+  const { instance, refresh } = useLive();
   const toast = useToast();
   const [busy, setBusy] = useState(false);
-  const denied = me.canAct === false;
-  const tip = denied ? (me.actionsReason ?? 'Not allowed') : undefined;
+  const denied = instance.canAct === false;
+  const tip = denied ? (instance.actionsReason ?? 'Not allowed') : undefined;
   const onClick = async () => {
     setBusy(true);
     try {
-      await run();
+      if ((await run()) === false) return;
       toast(done);
       refresh();
     } catch (e) {

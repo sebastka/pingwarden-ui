@@ -1,7 +1,17 @@
 // Where we are, kept in the query string so that reload, back and shared links work.
 import { useCallback, useEffect, useState } from 'react';
 
-export const VIEWS = ['monitors', 'events', 'notifications', 'maintenance', 'system', 'board'] as const;
+export const VIEWS = [
+  'monitors',
+  'events',
+  'reliability',
+  'certificates',
+  'dependencies',
+  'notifications',
+  'maintenance',
+  'system',
+  'board',
+] as const;
 export type View = (typeof VIEWS)[number];
 
 export type Params = Record<string, string>;
@@ -29,9 +39,10 @@ export function useRoute() {
     else history.pushState(null, '', href(next));
     setParams(next);
   }, []);
-  /** Opens a view with only the given parameters. */
+  /** Opens a view with only the given parameters (and the same Pingwarden instance). */
   const go = useCallback((view: View, p: Params = {}) => {
-    const next = { ...(view === 'monitors' ? {} : { view }), ...p };
+    const i = read().i;
+    const next = { ...(i ? { i } : {}), ...(view === 'monitors' ? {} : { view }), ...p };
     history.pushState(null, '', href(next));
     setParams(next);
   }, []);

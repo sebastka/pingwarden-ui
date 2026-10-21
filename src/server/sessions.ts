@@ -13,8 +13,14 @@ export interface Session {
   idToken: string | null;
   /** End of the session, whatever the tokens say (SESSION_TTL_HOURS). */
   expiresAt: number;
-  /** Whether Pingwarden lets this user run actions; null until known. */
+  /** Per instance id: whether Pingwarden lets this user act, and when that was last asked. */
+  access: Record<string, Access>;
+}
+
+export interface Access {
+  /** null: unknown (Pingwarden without /api/v1/me, and no action tried yet). */
   canAct: boolean | null;
+  checkedAt: number;
 }
 
 /** A login started at /auth/login and finished at /auth/callback. */

@@ -1,6 +1,6 @@
 // Calls to the Pingwarden API. The browser never talks to Pingwarden: every request goes
-// through here, with the user's access token (OIDC) or the configured API token.
-import type { Config } from './config.ts';
+// through here, with the user's access token (OIDC) or the instance's API token.
+import type { InstanceConfig } from './config.ts';
 
 export interface PwResponse {
   status: number;
@@ -36,44 +36,78 @@ export function errorMessage(r: PwResponse): string {
   return `Pingwarden answered HTTP ${r.status}`;
 }
 
-export class Pingwarden {
-  private readonly cfg: Config['pingwarden'];
+type Method = 'GET' | 'POST';
 
-  constructor(cfg: Config['pingwarden']) {
-    this.cfg = cfg;
+export class Pingwarden {
+  readonly id: string;
+  readonly name: string;
+  readonly baseUrl: string;
+  /** The instance's API token (AUTH_MODE=token). */
+  readonly token: string | null;
+  private readonly timeoutMs: number;
+
+  constructor(cfg: InstanceConfig, timeoutMs: number) {
+    this.id = cfg.id;
+    this.name = cfg.name;
+    this.baseUrl = cfg.url;
+    this.token = cfg.token;
+    this.timeoutMs = timeoutMs;
   }
 
-  get baseUrl(): string {
-    return this.cfg.url;
+  private init(method: Method, token: string | null, body: unknown, signal: AbortSignal): RequestInit {
+    return {
+      method,
+      headers: {
+        accept: 'application/json',
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal,
+      redirect: 'error',
+    };
+  }
+
+  private unavailable(e: unknown): PwUnavailable {
+    const err = e as Error;
+    if (err.name === 'TimeoutError') {
+      return new PwUnavailable(504, `${this.name} did not answer within ${this.timeoutMs / 1000} s`);
+    }
+    const cause = (err.cause as Error | undefined)?.message;
+    return new PwUnavailable(502, `${this.name} is unreachable: ${cause ?? err.message}`);
   }
 
   /** One API call; `path` starts after /api/v1. Throws PwUnavailable only, never on a status. */
   async request(
     path: string,
-    { method = 'GET', token = null }: { method?: 'GET' | 'POST'; token?: string | null } = {},
+    { method = 'GET', token = null, body }: { method?: Method; token?: string | null; body?: unknown } = {},
   ): Promise<PwResponse> {
     let res: Response;
     try {
-      res = await fetch(`${this.cfg.url}/api/v1${path}`, {
-        method,
-        headers: { accept: 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
-        signal: AbortSignal.timeout(this.cfg.timeoutMs),
-        redirect: 'error',
-      });
+      res = await fetch(
+        `${this.baseUrl}/api/v1${path}`,
+        this.init(method, token, body, AbortSignal.timeout(this.timeoutMs)),
+      );
     } catch (e) {
-      const err = e as Error;
-      if (err.name === 'TimeoutError') {
-        throw new PwUnavailable(504, `Pingwarden did not answer within ${this.cfg.timeoutMs / 1000} s`);
-      }
-      const cause = (err.cause as Error | undefined)?.message;
-      throw new PwUnavailable(502, `Pingwarden is unreachable: ${cause ?? err.message}`);
+      throw this.unavailable(e);
     }
-    const text = await res.text();
-    // A proxy's HTML error page or a wrong PINGWARDEN_URL: not something to relay as JSON.
-    if (!(res.headers.get('content-type') ?? '').includes('json')) {
-      throw new PwUnavailable(502, `Pingwarden answered HTTP ${res.status} without JSON; check PINGWARDEN_URL`);
+    return this.answer(res, path, await res.text());
+  }
+
+  /**
+   * An answer to relay. Pingwarden's own errors are JSON; an older Pingwarden answers a route it
+   * does not have with an empty 404 (405 for another method), which becomes a JSON "not found".
+   * Anything else without JSON (a proxy's error page, a wrong URL) is not relayed.
+   */
+  private answer(res: Response, path: string, text: string): PwResponse {
+    if ((res.headers.get('content-type') ?? '').includes('json')) return { status: res.status, text };
+    if ((res.status === 404 || res.status === 405) && !text.trim()) {
+      return {
+        status: res.status,
+        text: JSON.stringify({ error: `${this.name} has no ${path} (an older Pingwarden?)` }),
+      };
     }
-    return { status: res.status, text };
+    throw new PwUnavailable(502, `${this.name} answered HTTP ${res.status} without JSON; check its URL`);
   }
 
   /** A GET whose JSON body is needed by the UI server itself. */
@@ -81,5 +115,33 @@ export class Pingwarden {
     const r = await this.request(path, { token });
     if (r.status < 200 || r.status >= 300) throw new PwError(r.status, errorMessage(r));
     return JSON.parse(r.text) as T;
+  }
+
+  /**
+   * Opens the live stream (/api/v1/stream). On success the response body is the event stream,
+   * until `signal` aborts it; otherwise the JSON error response.
+   */
+  async stream(token: string | null, signal: AbortSignal): Promise<{ ok: true; body: ReadableStream } | PwResponse> {
+    let res: Response;
+    // The timeout covers the connection only: the stream itself lasts until `signal`.
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(new DOMException('connection timeout', 'TimeoutError')), this.timeoutMs);
+    const onAbort = () => ctl.abort(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
+    try {
+      res = await fetch(`${this.baseUrl}/api/v1/stream`, {
+        ...this.init('GET', token, undefined, ctl.signal),
+        headers: { accept: 'text/event-stream', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+      });
+    } catch (e) {
+      signal.removeEventListener('abort', onAbort);
+      throw this.unavailable(ctl.signal.reason ?? e);
+    } finally {
+      clearTimeout(timer);
+    }
+    if (res.ok && (res.headers.get('content-type') ?? '').startsWith('text/event-stream') && res.body) {
+      return { ok: true, body: res.body };
+    }
+    return this.answer(res, '/stream', await res.text());
   }
 }

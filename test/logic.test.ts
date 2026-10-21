@@ -2,8 +2,15 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Event, Group, Notification } from '../src/shared/pingwarden.ts';
 import {
+  budgetUsed,
   certDays,
+  certExpiresAt,
   durations,
+  layoutDependencies,
+  newlyDown,
+  outages,
+  reliability,
+  toCsv,
   groupPath,
   health,
   matches,
@@ -104,6 +111,10 @@ test('certificate days use seconds since the epoch', () => {
   assert.equal(certDays(monitor('c', { cert_expiry: now / 1000 + 10 * 86400 + 60 }) as never, now), 10);
   assert.equal(certDays(monitor('c', { cert_expiry: now / 1000 - 86400 * 2 }) as never, now), -2);
   assert.equal(certDays(monitor('c') as never, now), null);
+  // The newer field, in milliseconds, wins.
+  const both = monitor('c', { cert_expiry: 1, cert_expires_at: now + 3 * 86400_000 }) as never;
+  assert.equal(certExpiresAt(both), now + 3 * 86400_000);
+  assert.equal(certDays(both, now), 3);
 });
 
 test('filter words must all match id, name, target, type or tags', () => {
@@ -167,4 +178,142 @@ test('notifier health counts deliveries and keeps the latest result and error', 
   assert.equal(h.get('mail')!.last!.id, 5);
   assert.equal(h.get('mail')!.lastError!.error, 'timeout');
   assert.equal(h.get('hook')!.lastError, null);
+});
+
+const ev = (id: number, monitor_id: string, ts: number, from: Event['from'], to: Event['to']): Event => ({
+  id,
+  monitor_id,
+  ts,
+  from,
+  to,
+});
+
+test('outages: clipped to the period, ongoing until its end, MTTR only from whole outages', () => {
+  const from = 1000;
+  const to = 2000;
+  // Newest first, as Pingwarden sends them.
+  const events = [
+    ev(6, 'b', 1900, 'up', 'down'), // still down at `to`
+    ev(5, 'a', 1700, 'down', 'up'),
+    ev(4, 'a', 1500, 'pending', 'down'),
+    ev(3, 'a', 1400, 'up', 'pending'),
+    ev(2, 'c', 1200, 'down', 'up'), // down since before `from`
+    ev(1, 'a', 500, 'up', 'down'), // before the period
+  ];
+  const o = outages(events, from, to);
+  assert.deepEqual(o.get('a'), {
+    count: 1,
+    downtimeMs: 200,
+    longestMs: 200,
+    resolved: 1,
+    resolvedMs: 200,
+    ongoing: false,
+  });
+  assert.deepEqual(o.get('b'), {
+    count: 1,
+    downtimeMs: 100,
+    longestMs: 100,
+    resolved: 0,
+    resolvedMs: 0,
+    ongoing: true,
+  });
+  assert.deepEqual(o.get('c'), {
+    count: 1,
+    downtimeMs: 200,
+    longestMs: 200,
+    resolved: 0,
+    resolvedMs: 0,
+    ongoing: false,
+  });
+});
+
+test('reliability rows: uptime from rollups, error budget against the SLO, MTTR and MTBF', () => {
+  const rows = reliability(
+    [monitor('a', { slo: 99 }), monitor('b')] as never,
+    { a: [rollup(0, { up: 98, down: 1, degraded: 1 })] },
+    [ev(2, 'a', 3000, 'down', 'up'), ev(1, 'a', 1000, 'up', 'down')],
+    0,
+    10_000,
+  );
+  const a = rows.find((r) => r.id === 'a')!;
+  assert.equal(a.uptime, 99);
+  assert.equal(a.checks, 100);
+  assert.ok(Math.abs(a.budgetUsed! - 1) < 1e-9);
+  assert.equal(a.outages, 1);
+  assert.equal(a.downtimeMs, 2000);
+  assert.equal(a.mttrMs, 2000);
+  assert.equal(a.mtbfMs, 8000);
+  const b = rows.find((r) => r.id === 'b')!;
+  assert.equal(b.uptime, null);
+  // Results only from 6000 on: MTBF over the 4000 ms observed, not the whole period.
+  const young = reliability(
+    [monitor('y')] as never,
+    { y: [rollup(6000, { up: 9, down: 1 })] },
+    [ev(2, 'y', 8000, 'down', 'up'), ev(1, 'y', 7000, 'up', 'down')],
+    0,
+    10_000,
+  )[0]!;
+  assert.equal(young.mtbfMs, 3000);
+  assert.equal(b.budgetUsed, null);
+  assert.equal(b.mttrMs, null);
+  assert.ok(Math.abs(budgetUsed(99.95, 99.9)! - 0.5) < 1e-9);
+  assert.equal(budgetUsed(100, 99.9), 0);
+  assert.equal(budgetUsed(98, null), null);
+});
+
+test('CSV quotes what needs quoting', () => {
+  assert.equal(
+    toCsv(
+      ['a', 'b'],
+      [
+        ['x,y', 'say "hi"'],
+        [1, null],
+      ],
+    ),
+    'a,b\r\n"x,y","say ""hi"""\r\n1,\r\n',
+  );
+});
+
+test('dependency layout: dependencies to the left, unknown ids and cycles tolerated', () => {
+  const m = (id: string, depends_on: string[] = []) => monitor(id, { depends_on }) as never;
+  const l = layoutDependencies([
+    m('router'),
+    m('db', ['router']),
+    m('web', ['db', 'router', 'ghost']),
+    m('alone'),
+    m('x', ['y']),
+    m('y', ['x']),
+  ]);
+  const at = (id: string) => l.nodes.find((n) => n.id === id);
+  assert.equal(at('router')!.layer, 0);
+  assert.equal(at('db')!.layer, 1);
+  assert.equal(at('web')!.layer, 2);
+  assert.equal(at('alone'), undefined);
+  assert.ok(at('x') && at('y'));
+  assert.ok(l.layers >= 3);
+  assert.deepEqual(
+    l.edges.filter(([, b]) => b === 'web'),
+    [
+      ['db', 'web'],
+      ['router', 'web'],
+    ],
+  );
+});
+
+test('alerts fire for monitors that went down, not for new or still-down ones', () => {
+  const before = new Map([
+    ['a', 'up'],
+    ['b', 'down'],
+    ['c', 'pending'],
+  ]);
+  const now = [
+    monitor('a', { status: 'down' }),
+    monitor('b', { status: 'down' }),
+    monitor('c', { status: 'down' }),
+    monitor('new', { status: 'down' }),
+  ] as never[];
+  assert.deepEqual(
+    newlyDown(before, now).map((m: { id: string }) => m.id),
+    ['a', 'c'],
+  );
 });

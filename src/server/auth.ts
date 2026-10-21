@@ -8,7 +8,8 @@ import type { Config, OidcConfig, TokenAuthMethod } from './config.ts';
 import { errorMessage, type Pingwarden, PwUnavailable } from './pingwarden.ts';
 import { type Session, SessionStore } from './sessions.ts';
 
-export type AppEnv = { Variables: { session: Session | null } };
+/** `pw`: the instance an /api/i/:inst/… request is for. */
+export type AppEnv = { Variables: { session: Session | null; pw: Pingwarden } };
 
 const SESSION_COOKIE = 'pingwarden_ui_session';
 const LOGIN_COOKIE = 'pingwarden_ui_login';
@@ -43,32 +44,6 @@ export function jwtClaims(token: string): Record<string, unknown> | null {
   } catch {
     return null;
   }
-}
-
-/**
- * The values of a roles claim, read the way Pingwarden reads its `claim`: a space-separated
- * string (`scope`) or a list of strings; dots descend into objects (`realm_access.roles`).
- * The name is tried as-is first, for providers that use URLs as claim names.
- */
-export function readRoles(claims: Record<string, unknown>, claim: string): string[] {
-  let raw: unknown = claims[claim];
-  if (raw === undefined && claim.includes('.')) {
-    raw = claim.split('.').reduce<unknown>((v, k) => (isPlainObject(v) ? v[k] : undefined), claims);
-  }
-  if (typeof raw === 'string') return raw.split(/\s+/).filter(Boolean);
-  if (Array.isArray(raw)) return raw.filter((r): r is string => typeof r === 'string');
-  return [];
-}
-
-/**
- * Whether to offer actions to the holder of this access token. Only a display hint: the token
- * came straight from the provider's token endpoint, and Pingwarden checks it on every action.
- */
-export function canActHint(accessToken: string, cfg: Pick<OidcConfig, 'rolesClaim' | 'adminRoles'>): boolean | null {
-  if (!cfg.rolesClaim) return null;
-  const claims = jwtClaims(accessToken);
-  if (!claims) return null;
-  return readRoles(claims, cfg.rolesClaim).some((r) => cfg.adminRoles.includes(r));
 }
 
 /** Maps OIDC_TOKEN_AUTH_METHOD to openid-client's client authentication (validated at startup). */
@@ -110,14 +85,14 @@ export class Auth {
   readonly store: SessionStore;
   private readonly cfg: OidcConfig;
   private readonly publicUrl: string;
-  private readonly pw: Pingwarden;
+  private readonly instances: Pingwarden[];
   private discovery: Promise<oidc.Configuration> | null = null;
   private readonly refreshing = new Map<Session, Promise<string>>();
 
-  constructor(cfg: Config, pw: Pingwarden, store = new SessionStore()) {
+  constructor(cfg: Config, instances: Pingwarden[], store = new SessionStore()) {
     this.cfg = cfg.auth.oidc!;
     this.publicUrl = cfg.http.publicUrl!;
-    this.pw = pw;
+    this.instances = instances;
     this.store = store;
     // Sessions of users who never come back would otherwise stay until the next sign-in.
     setInterval(() => store.purge(), 10 * 60_000).unref();
@@ -165,9 +140,14 @@ export class Auth {
     };
   }
 
-  /** A valid access token for the session, refreshed when it is about to expire. */
-  async accessToken(s: Session): Promise<string> {
-    if (s.accessExpiresAt === null || s.accessExpiresAt - REFRESH_MARGIN_MS > Date.now()) return s.accessToken;
+  /**
+   * A valid access token for the session, refreshed when it is about to expire (or always with
+   * `force`, after Pingwarden refused the current one).
+   */
+  async accessToken(s: Session, force = false): Promise<string> {
+    if (!force && (s.accessExpiresAt === null || s.accessExpiresAt - REFRESH_MARGIN_MS > Date.now())) {
+      return s.accessToken;
+    }
     if (!s.refreshToken) {
       this.store.drop(s);
       throw new SessionExpired();
@@ -188,8 +168,8 @@ export class Auth {
       s.accessExpiresAt = expiry(tokens);
       if (tokens.refresh_token) s.refreshToken = tokens.refresh_token;
       if (tokens.id_token) s.idToken = tokens.id_token;
-      const hint = canActHint(s.accessToken, this.cfg);
-      if (hint !== null) s.canAct = hint;
+      // Roles may have changed with the new token: ask Pingwarden again.
+      s.access = {};
       return s.accessToken;
     } catch (e) {
       console.warn(`[auth] token refresh failed for ${s.name}: ${(e as Error).message}`);
@@ -261,25 +241,36 @@ export class Auth {
       const claims = tokens.claims()!;
       const name = displayName(claims);
 
-      // Pingwarden is the authority: a user it does not accept gets no session at all.
-      try {
-        const r = await this.pw.request('/status', { token: tokens.access_token });
-        if (r.status === 401 || r.status === 403) {
-          const why = errorMessage(r);
-          console.warn(`[auth] Pingwarden refused the access token of ${name} (${r.status}): ${why}`);
-          return page(
-            c,
-            403,
-            'Access denied',
-            r.status === 403
-              ? `Pingwarden accepted your sign-in but gives you no read access (${why}). Ask for a role listed in its server.auth.oidc.read or admin.`
-              : `Pingwarden did not accept the access token (${why}). Check its server.auth.oidc issuer and audience, and that this client's tokens carry that audience.`,
-          );
-        }
-      } catch (e) {
-        if (!(e instanceof PwUnavailable)) throw e;
-        console.error(`[auth] ${e.message}`);
-        return page(c, 502, 'Pingwarden unavailable', e.message);
+      // Pingwarden is the authority: a user that no instance accepts gets no session at all.
+      // Unreachable instances do not block the sign-in (the dashboard shows them as such).
+      const answers = await Promise.all(
+        this.instances.map((pw) =>
+          pw.request('/status', { token: tokens.access_token }).then(
+            (r) => ({ pw, r }),
+            (e: unknown) => {
+              if (!(e instanceof PwUnavailable)) throw e;
+              console.error(`[auth] ${e.message}`);
+              return { pw, r: null };
+            },
+          ),
+        ),
+      );
+      const refused = answers.filter((a) => a.r && (a.r.status === 401 || a.r.status === 403));
+      if (refused.length === answers.length) {
+        const { pw, r } = refused[0]!;
+        const why = errorMessage(r!);
+        console.warn(`[auth] ${pw.name} refused the access token of ${name} (${r!.status}): ${why}`);
+        return page(
+          c,
+          403,
+          'Access denied',
+          r!.status === 403
+            ? `Pingwarden accepted your sign-in but gives you no read access (${why}). Ask for a role listed in its server.auth.oidc.read or admin.`
+            : `Pingwarden did not accept the access token (${why}). Check its server.auth.oidc issuer and audience, and that this client's tokens carry that audience.`,
+        );
+      }
+      if (answers.every((a) => a.r === null)) {
+        return page(c, 502, 'Pingwarden unavailable', 'No Pingwarden instance could be reached. Try again later.');
       }
 
       const token = this.store.create({
@@ -290,7 +281,7 @@ export class Auth {
         refreshToken: tokens.refresh_token ?? null,
         idToken: tokens.id_token ?? null,
         expiresAt: Date.now() + this.cfg.sessionTtlHours * 3600_000,
-        canAct: canActHint(tokens.access_token, this.cfg),
+        access: {},
       });
       setCookie(c, SESSION_COOKIE, token, {
         httpOnly: true,

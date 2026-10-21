@@ -1,6 +1,6 @@
 // What each status looks like, and how buckets of results are summarised. Status colours are
 // reserved for status and always come with an icon and a label (never colour alone).
-import type { Monitor, Status } from '../shared/pingwarden.ts';
+import type { Status } from '../shared/pingwarden.ts';
 import type { IconName } from './components/icons.tsx';
 import type { SlotState } from './logic.ts';
 
@@ -29,10 +29,6 @@ export const STATUS_META: Record<Status, { label: string; tone: Tone; icon: Icon
 /** Problems first: the order of the monitor list and the board. */
 export const STATUS_ORDER: Status[] = ['down', 'pending', 'degraded', 'unknown', 'maintenance', 'paused', 'up'];
 
-export const statusOf = (m: Monitor): Status => (m.enabled ? (m.status ?? 'unknown') : 'paused');
-
-export const isProblem = (s: Status) => s === 'down' || s === 'pending' || s === 'degraded';
-
 export const SLOT_META: Record<SlotState, { label: string; tone: Tone | 'empty' }> = {
   up: { label: 'All up', tone: 'good' },
   degraded: { label: 'Degraded', tone: 'warning' },
@@ -44,6 +40,10 @@ export const SLOT_META: Record<SlotState, { label: string; tone: Tone | 'empty' 
 
 export {
   certDays,
+  certExpiresAt,
+  isProblem,
+  isSilenced,
+  statusOf,
   type Slot,
   type SlotState,
   slotsFromHeartbeats,

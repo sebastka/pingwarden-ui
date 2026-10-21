@@ -1,13 +1,16 @@
 import { useMemo, useState } from 'react';
 import type { Heartbeat, Monitor, UptimeWindow } from '../../shared/pingwarden.ts';
-import { api } from '../api.ts';
+import { unsupported } from '../api.ts';
 import { LatencyChart, SlotTable } from '../components/charts.tsx';
+import { Icon } from '../components/icons.tsx';
+import { Menu } from '../components/Menu.tsx';
 import {
   ActionButton,
   Chip,
   Drawer,
   Empty,
   ErrorBanner,
+  InfoBanner,
   KV,
   MonitorLink,
   Segmented,
@@ -19,11 +22,20 @@ import {
 import { useLive } from '../context.ts';
 import { ago, dateTime, dateTimeSeconds, duration, interval, latency, num, percent, plural } from '../format.ts';
 import { useAsync, useNow, usePoll } from '../hooks.ts';
-import { certDays, slotsFromHeartbeats, slotsFromRollups, statusOf } from '../status.ts';
+import { budgetUsed } from '../logic.ts';
+import {
+  certDays,
+  certExpiresAt,
+  isProblem,
+  isSilenced,
+  slotsFromHeartbeats,
+  slotsFromRollups,
+  statusOf,
+} from '../status.ts';
 import { EventTable } from './Events.tsx';
 import { DeliveryTable } from './Notifications.tsx';
 
-type Tab = 'overview' | 'heartbeats' | 'events' | 'notifications';
+type Tab = 'overview' | 'heartbeats' | 'events' | 'notifications' | 'config';
 type RangeId = '24h' | '7d' | '30d' | '365d';
 
 const RANGES: { id: RangeId; label: string }[] = [
@@ -36,8 +48,109 @@ const RANGES: { id: RangeId; label: string }[] = [
 const HOUR = 3600_000;
 const DAY = 24 * HOUR;
 
+const SILENCE_FOR = [
+  { duration: '15m', label: '15 minutes' },
+  { duration: '1h', label: '1 hour' },
+  { duration: '4h', label: '4 hours' },
+  { duration: '1d', label: '1 day' },
+  { duration: '7d', label: '7 days' },
+];
+
+/** Acknowledge, silence and ad-hoc maintenance need a newer Pingwarden; its monitors say so. */
+const hasRuntimeControls = (m: Monitor) => m.acknowledged !== undefined;
+
+function Actions({ m }: { m: Monitor }) {
+  const { api, instance } = useLive();
+  const now = useNow(30);
+  if (instance.canAct === false) return null;
+  const silenced = isSilenced(m, now);
+  return (
+    <>
+      {m.enabled && (
+        <ActionButton icon="zap" label="Check now" run={() => api.check(m.id)} done={`${m.name}: check started`} />
+      )}
+      {m.paused ? (
+        <ActionButton icon="play" label="Resume" run={() => api.resume(m.id)} done={`${m.name} resumed`} />
+      ) : (
+        <ActionButton icon="pause" label="Pause" run={() => api.pause(m.id)} done={`${m.name} paused`} />
+      )}
+      {hasRuntimeControls(m) && (
+        <>
+          {m.acknowledged ? (
+            <ActionButton
+              icon="x"
+              label="Unacknowledge"
+              run={() => api.unack(m.id)}
+              done={`${m.name}: acknowledgement removed`}
+            />
+          ) : (
+            isProblem(statusOf(m)) && (
+              <ActionButton
+                icon="check"
+                label="Acknowledge"
+                run={async () => {
+                  const comment = window.prompt(
+                    `Acknowledge ${m.name}: reminders stop until it recovers. Comment:`,
+                    '',
+                  );
+                  if (comment === null) return false;
+                  return api.ack(m.id, comment.trim() || undefined);
+                }}
+                done={`${m.name} acknowledged`}
+              />
+            )
+          )}
+          {silenced ? (
+            <ActionButton
+              icon="bell"
+              label="Unsilence"
+              run={() => api.unsilence(m.id)}
+              done={`${m.name}: notifications resumed`}
+            />
+          ) : (
+            <Menu
+              closeOnClick
+              summary={
+                <>
+                  <Icon name="bellOff" /> Silence
+                </>
+              }
+            >
+              <div className="menu-title">No notification about {m.name} for</div>
+              {SILENCE_FOR.map((o) => (
+                <ActionButton
+                  key={o.duration}
+                  small
+                  icon="bellOff"
+                  label={o.label}
+                  run={() => api.silence(m.id, o.duration)}
+                  done={`${m.name} silenced for ${o.label}`}
+                />
+              ))}
+            </Menu>
+          )}
+          {!m.maintenance && (
+            <ActionButton
+              icon="wrench"
+              label="Maintenance 1 h"
+              run={() =>
+                api.startMaintenance({
+                  monitors: [m.id],
+                  duration: '1h',
+                  description: `${m.name}, started from the dashboard`,
+                })
+              }
+              done={`${m.name} is in maintenance for an hour`}
+            />
+          )}
+        </>
+      )}
+    </>
+  );
+}
+
 export function MonitorDrawer({ id, onClose }: { id: string; onClose: () => void }) {
-  const { byId, me } = useLive();
+  const { byId, api } = useLive();
   const listed = byId.get(id);
   // Also works for a monitor that is not in the list (removed from the configuration).
   const one = useAsync(() => (listed ? Promise.resolve(listed) : api.monitor(id)), [id, listed]);
@@ -49,26 +162,7 @@ export function MonitorDrawer({ id, onClose }: { id: string; onClose: () => void
       title={m ? m.name : id}
       subtitle={m && <span className="mono">{m.id === m.name ? m.target : `${m.id} · ${m.target}`}</span>}
       onClose={onClose}
-      actions={
-        m &&
-        me.canAct !== false && (
-          <>
-            {m.enabled && (
-              <ActionButton
-                icon="zap"
-                label="Check now"
-                run={() => api.check(m.id)}
-                done={`${m.name}: check started`}
-              />
-            )}
-            {m.paused ? (
-              <ActionButton icon="play" label="Resume" run={() => api.resume(m.id)} done={`${m.name} resumed`} />
-            ) : (
-              <ActionButton icon="pause" label="Pause" run={() => api.pause(m.id)} done={`${m.name} paused`} />
-            )}
-          </>
-        )
-      }
+      actions={m && <Actions m={m} />}
     >
       {one.error && !m && <ErrorBanner>{one.error.message}</ErrorBanner>}
       {!m && !one.error && <Spinner />}
@@ -82,12 +176,14 @@ export function MonitorDrawer({ id, onClose }: { id: string; onClose: () => void
               { id: 'heartbeats', label: 'Checks' },
               { id: 'events', label: 'Events' },
               { id: 'notifications', label: 'Notifications' },
+              { id: 'config', label: 'Configuration' },
             ]}
           />
           {tab === 'overview' && <Overview m={m} />}
           {tab === 'heartbeats' && <Heartbeats id={m.id} />}
           {tab === 'events' && <MonitorEvents m={m} />}
           {tab === 'notifications' && <MonitorNotifications id={m.id} />}
+          {tab === 'config' && <MonitorConfiguration id={m.id} />}
         </>
       )}
     </Drawer>
@@ -95,11 +191,14 @@ export function MonitorDrawer({ id, onClose }: { id: string; onClose: () => void
 }
 
 function Overview({ m }: { m: Monitor }) {
-  const { byId, me } = useLive();
+  const { byId, instance, api, changes } = useLive();
   const now = useNow(15);
-  const uptime = usePoll(() => api.uptime(m.id), [m.id], 60);
+  const uptime = usePoll(() => api.uptime(m.id), [m.id, changes], 60);
   const s = statusOf(m);
   const days = certDays(m, now);
+  const expires = certExpiresAt(m);
+  const month = uptime.data?.windows.find((w) => w.window === '30d');
+  const used = budgetUsed(month?.uptime ?? null, m.slo);
   return (
     <>
       <KV
@@ -132,17 +231,51 @@ function Overview({ m }: { m: Monitor }) {
             ),
           ],
           ['Consecutive failures', m.consecutive_failures ? num(m.consecutive_failures) : null],
+          [
+            'Acknowledged',
+            m.acknowledged && (
+              <span>
+                by {m.acknowledged.by} {ago(m.acknowledged.at, now)}
+                {m.acknowledged.comment && <span className="muted"> · “{m.acknowledged.comment}”</span>}
+                <span className="muted small"> (no reminders until it recovers)</span>
+              </span>
+            ),
+          ],
+          [
+            'Silenced',
+            isSilenced(m, now) && (
+              <span className="warn-text">
+                until {dateTime(m.silenced_until)}
+                {m.silenced_by && ` by ${m.silenced_by}`}: no notification is sent
+              </span>
+            ),
+          ],
           ['Flapping', m.flapping && <span className="warn-text">Yes: notifications are held back</span>],
           ['Maintenance', m.maintenance && <Chip icon="wrench">{m.maintenance}</Chip>],
           ['Enabled', !m.enabled && 'No: disabled in the configuration'],
           ['Paused', m.paused && 'Yes, from the API: not checked until resumed'],
           [
             'Certificate',
-            m.cert_expiry != null && (
+            expires !== null && (
               <span
                 className={days !== null && days <= 7 ? 'error-text' : days !== null && days <= 30 ? 'warn-text' : ''}
               >
-                expires {dateTime(m.cert_expiry * 1000)} ({days! < 0 ? `${-days!} days ago` : `in ${days} days`})
+                expires {dateTime(expires)} ({days! < 0 ? `${-days!} days ago` : `in ${days} days`})
+              </span>
+            ),
+          ],
+          [
+            'SLO',
+            m.slo != null && (
+              <span>
+                {percent(m.slo)} uptime
+                {used !== null && (
+                  <span className={used >= 1 ? 'error-text' : used >= 0.75 ? 'warn-text' : 'muted'}>
+                    {' '}
+                    · last 30 days: {percent(month!.uptime)},{' '}
+                    {used >= 1 ? 'the error budget is used up' : `${Math.round(used * 100)} % of the error budget used`}
+                  </span>
+                )}
               </span>
             ),
           ],
@@ -205,7 +338,7 @@ function Overview({ m }: { m: Monitor }) {
           ],
         ]}
       />
-      {me.canAct === false && me.actionsReason && <p className="muted small">{me.actionsReason}</p>}
+      {instance.canAct === false && instance.actionsReason && <p className="muted small">{instance.actionsReason}</p>}
 
       <h3>Uptime</h3>
       {uptime.error && <ErrorBanner>{uptime.error.message}</ErrorBanner>}
@@ -250,7 +383,7 @@ function UptimeTile({ w }: { w: UptimeWindow }) {
 
 function History({ m }: { m: Monitor }) {
   const [range, setRange] = useState<RangeId>('24h');
-  const { me } = useLive();
+  const { me, api, changes } = useLive();
   const data = usePoll(
     async () => {
       const to = Date.now();
@@ -268,7 +401,7 @@ function History({ m }: { m: Monitor }) {
       const r = await api.rollups(m.id, 'hour', { from: to - days * DAY, to });
       return slotsFromRollups(r.rollups, slotHours * HOUR, (days * 24) / slotHours, to);
     },
-    [m.id, range],
+    [m.id, range, changes],
     Math.max(60, me.refreshSeconds),
   );
   const what = { '24h': '15 minutes', '7d': 'hour', '30d': '4 hours', '365d': 'day' }[range];
@@ -303,6 +436,7 @@ function History({ m }: { m: Monitor }) {
 const PAGE = 200;
 
 function Heartbeats({ id }: { id: string }) {
+  const { api } = useLive();
   const [pages, setPages] = useState<Heartbeat[][]>([]);
   const first = useAsync(() => api.heartbeats(id, { limit: PAGE }), [id]);
   const [busy, setBusy] = useState(false);
@@ -369,10 +503,11 @@ function Heartbeats({ id }: { id: string }) {
 }
 
 function MonitorEvents({ m }: { m: Monitor }) {
+  const { api, changes } = useLive();
   const events = useAsync(() => {
     const to = Date.now();
     return api.monitorEvents(m.id, { from: to - 90 * DAY, to, limit: 1000 });
-  }, [m.id]);
+  }, [m.id, changes]);
   if (events.error) return <ErrorBanner>{events.error.message}</ErrorBanner>;
   if (!events.data) return <Spinner />;
   if (!events.data.events.length) return <Empty>No status change in the last 90 days.</Empty>;
@@ -385,11 +520,12 @@ function MonitorEvents({ m }: { m: Monitor }) {
 }
 
 function MonitorNotifications({ id }: { id: string }) {
-  // The log cannot be filtered by monitor in Pingwarden: read the period, keep this monitor's.
+  const { api, changes } = useLive();
+  // Filtered by Pingwarden; also here, for an older Pingwarden that ignores `monitor`.
   const log = useAsync(() => {
     const to = Date.now();
-    return api.notifications({ from: to - 30 * DAY, to, limit: 10_000 });
-  }, [id]);
+    return api.notifications({ from: to - 30 * DAY, to, limit: 10_000, monitor: id });
+  }, [id, changes]);
   if (log.error) return <ErrorBanner>{log.error.message}</ErrorBanner>;
   if (!log.data) return <Spinner />;
   const rows = log.data.notifications.filter((n) => n.monitor_id === id);
@@ -398,6 +534,80 @@ function MonitorNotifications({ id }: { id: string }) {
     <>
       <p className="muted small">Deliveries of the last 30 days, retries included.</p>
       <DeliveryTable rows={rows} showMonitor={false} />
+    </>
+  );
+}
+
+/** A configuration value for display: durations, lists and flags in words. */
+function show(key: string, v: unknown): string {
+  if (v === null || v === undefined) return '–';
+  if (typeof v === 'boolean') return v ? 'yes' : 'no';
+  if (typeof v === 'number' && key.endsWith('_seconds')) return v ? duration(v * 1000) : '0 (never)';
+  if (typeof v === 'number' && key.endsWith('_ms')) return latency(v);
+  if (Array.isArray(v))
+    return v.length ? v.map((x) => (typeof x === 'object' ? JSON.stringify(x) : String(x))).join(', ') : '–';
+  if (typeof v === 'object') return JSON.stringify(v);
+  return String(v);
+}
+
+const label = (key: string) => {
+  const k = key.replace(/_(seconds|ms)$/, '').replaceAll('_', ' ');
+  return k[0]!.toUpperCase() + k.slice(1);
+};
+
+function MonitorConfiguration({ id }: { id: string }) {
+  const { api, changes } = useLive();
+  const cfg = useAsync(() => api.monitorConfig(id), [id, changes]);
+  if (cfg.error) {
+    return unsupported(cfg.error) ? (
+      <InfoBanner>This Pingwarden does not show monitor configurations: that needs a newer version.</InfoBanner>
+    ) : (
+      <ErrorBanner>{cfg.error.message}</ErrorBanner>
+    );
+  }
+  if (!cfg.data) return <Spinner />;
+  const { settings, check } = cfg.data;
+  const flapping = settings.flapping;
+  return (
+    <>
+      <p className="muted small">
+        The effective settings, after group and global defaults, as Pingwarden runs them. Secrets are never shown.
+      </p>
+      <h3>Alerting</h3>
+      <KV
+        rows={[
+          ['Enabled', show('enabled', settings.enabled)],
+          ['Interval', interval(settings.interval_seconds)],
+          ['Timeout', duration(settings.timeout_seconds * 1000)],
+          ['Down after', plural(settings.failure_threshold, 'failed check')],
+          ['Up again after', plural(settings.recovery_threshold, 'successful check')],
+          ['Reminders', settings.renotify_every_seconds ? interval(settings.renotify_every_seconds) : 'none'],
+          ['Notify degraded', show('notify_degraded', settings.notify_degraded)],
+          [
+            'Flap detection',
+            flapping
+              ? `more than ${flapping.max_transitions} changes in ${duration(flapping.window_seconds * 1000)}`
+              : 'off',
+          ],
+          ['Degraded above', settings.degraded_latency_ms != null ? latency(settings.degraded_latency_ms) : null],
+          ['SLO', settings.slo != null ? percent(settings.slo) : null],
+          ['Notifies', show('notify', settings.notify)],
+          ['Depends on', show('depends_on', settings.depends_on)],
+          ['Group', settings.group],
+          ['Tags', show('tags', settings.tags)],
+        ]}
+      />
+      <h3>Check ({check.type})</h3>
+      <KV
+        rows={Object.entries(check)
+          .filter(([k]) => k !== 'type')
+          .map(([k, v]) => [
+            label(k),
+            <span key={k} className="mono wrap">
+              {show(k, v)}
+            </span>,
+          ])}
+      />
     </>
   );
 }

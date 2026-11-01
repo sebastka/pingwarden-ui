@@ -11,7 +11,7 @@
 # Images are pinned by digest (multi-arch index); Dependabot keeps them current.
 services:
   mock-oidc:
-    image: ghcr.io/navikt/mock-oauth2-server:6.1.2@sha256:94d4ebf0fe793a727b3468b846e92ccbcd513f3b359a095802d817934d762e01
+    image: ghcr.io/navikt/mock-oauth2-server:6.1.3@sha256:2a813381bf282da46ff36ff386059e7903e25865056af8149f4fb3f1441916b8
     restart: unless-stopped
     environment:
       JSON_CONFIG_PATH: /config/mock-oidc.json
@@ -28,7 +28,7 @@ services:
 
   pingwarden:
     # PINGWARDEN_IMAGE runs another build, e.g. one made from a Pingwarden checkout.
-    image: ${PINGWARDEN_IMAGE:-ghcr.io/sebastka/pingwarden:edge@sha256:e85c709f61b88ae92eb25bd4fc5112ecd798fd0739fceff76816be0a6bbdfc61}
+    image: ${PINGWARDEN_IMAGE:-ghcr.io/sebastka/pingwarden:edge@sha256:df601431b42efc4c440b3e8188e77dd5091f8bc2a1c4efaf924ca5e52341bd92}
     restart: unless-stopped
     network_mode: service:mock-oidc
     depends_on:

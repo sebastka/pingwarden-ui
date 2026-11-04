@@ -28,7 +28,7 @@ services:
 
   pingwarden:
     # PINGWARDEN_IMAGE runs another build, e.g. one made from a Pingwarden checkout.
-    image: ${PINGWARDEN_IMAGE:-ghcr.io/sebastka/pingwarden:edge@sha256:df601431b42efc4c440b3e8188e77dd5091f8bc2a1c4efaf924ca5e52341bd92}
+    image: ${PINGWARDEN_IMAGE:-ghcr.io/sebastka/pingwarden:edge@sha256:9a54a0972933e00fd9a60ddfa3eb75573d9e11e130e43c33772002708745d578}
     restart: unless-stopped
     network_mode: service:mock-oidc
     depends_on:

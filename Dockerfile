@@ -15,7 +15,7 @@
 #
 # Images are pinned by digest (multi-arch index); Dependabot keeps them up to date.
 
-FROM --platform=$BUILDPLATFORM dhi.io/node:26-alpine-dev@sha256:0614d22bcdfe1f5fbf985e68b455e61aefba8bc697894a6e91a8542a3e5f26b4 AS build
+FROM --platform=$BUILDPLATFORM dhi.io/node:26-alpine-dev@sha256:d2c9453c702b59b3080b1990d41675b3e00effabc599c27a79c207428864af95 AS build
 WORKDIR /src
 COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci --no-audit --no-fund
@@ -23,12 +23,12 @@ COPY tsconfig.json tsconfig.server.json tsconfig.web.json vite.config.ts ./
 COPY src ./src
 RUN npm run build
 
-FROM --platform=$BUILDPLATFORM dhi.io/node:26-alpine-dev@sha256:0614d22bcdfe1f5fbf985e68b455e61aefba8bc697894a6e91a8542a3e5f26b4 AS prod-deps
+FROM --platform=$BUILDPLATFORM dhi.io/node:26-alpine-dev@sha256:d2c9453c702b59b3080b1990d41675b3e00effabc599c27a79c207428864af95 AS prod-deps
 WORKDIR /src
 COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 
-FROM dhi.io/node:26-alpine@sha256:9d778a01d260a1b9d9656e6ca289e9a352def10b255f85e23050a5c71a6cd42e AS runtime
+FROM dhi.io/node:26-alpine@sha256:732b7f53f1a10df0c4e8ded0af55fadb6c0c778c987d2c855755b72a1cc85a86 AS runtime
 ARG REVISION=unknown
 LABEL org.opencontainers.image.title="pingwarden-ui" \
       org.opencontainers.image.description="Dashboard for Pingwarden" \
